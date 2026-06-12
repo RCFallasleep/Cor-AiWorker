@@ -1,0 +1,51 @@
+services:
+
+  # ── SearXNG 联网搜索 ──────────────────────────────────────────────────────
+  searxng:
+    image: searxng/searxng:latest
+    container_name: cor-searxng
+    ports:
+      - "8080:8080"
+    volumes:
+      # 挂载自定义配置（开启 json 格式输出）
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+    restart: unless-stopped
+
+  # ── 后端 FastAPI ──────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: cor-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - SEARXNG_BASE_URL=http://searxng:8080
+      - ALLOWED_ORIGINS=["http://localhost:3000","http://127.0.0.1:3000"]
+      - DEBUG=false
+      - LOG_DB_PATH=/data/agent_logs.db
+    volumes:
+      # 持久化 SQLite 日志数据库
+      - ./data:/data
+    depends_on:
+      - searxng
+    restart: unless-stopped
+
+  # ── 前端 Next.js ──────────────────────────────────────────────────────────
+  # 仅在 deploy profile 下启动，本地开发时用 npm run dev 代替
+  # 启动方式：docker compose --profile deploy up -d
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # 容器内前端访问后端：走 Docker 内部网络
+        NEXT_PUBLIC_BACKEND_URL: http://backend:8000
+    container_name: cor-frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    restart: unless-stopped
+    profiles:
+      - deploy

@@ -3,6 +3,16 @@
 
 export type MessageRole = "user" | "assistant";
 
+/** Agent 流程图中单个工具调用节点 */
+export interface AgentStep {
+  id: string;
+  name: string;                       // 工具名，如 "web_search"
+  args: Record<string, unknown>;      // 工具参数
+  status: "running" | "done" | "error";
+  thinkingText?: string;              // 本步骤前模型的思考文字（精简）
+  result?: string;                    // 工具执行结果（可选展示）
+}
+
 export interface ChatMessage {
   id: string;
   role: MessageRole;
@@ -17,6 +27,8 @@ export interface ChatMessage {
     ctxPercent?: number;      // 17% ctx
     model?: string;           // claude-4.6-sonnet-google
   };
+  // Agent 模式下的工具调用流程图数据（ReAct 每步一个节点，横向排列）
+  agentSteps?: AgentStep[];
   // 用户名（user 消息）
   username?: string;
 }

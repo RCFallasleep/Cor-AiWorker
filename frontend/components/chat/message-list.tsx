@@ -4,8 +4,9 @@ import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
-import { Copy, Check, Star, Volume2, Trash2 } from "lucide-react";
+import { Copy, Check, Star, Volume2, Trash2, GitFork, ChevronDown, ChevronRight } from "lucide-react";
 import type { ChatMessage } from "@/lib/mock-chat-data";
+import { AgentFlowChart } from "@/components/chat/agent-flow-chart";
 
 // ── 代码块组件（含语言标签 + 复制按钮）──
 function CodeBlock({ language, code }: { language: string; code: string }) {
@@ -295,6 +296,8 @@ function MessageMeta({ msg }: { msg: ChatMessage }) {
 // ── 单条消息 ──
 function MessageItem({ msg, isStreaming }: { msg: ChatMessage; isStreaming?: boolean }) {
   const isUser = msg.role === "user";
+  // 流程图收起/展开状态（默认展开）
+  const [flowExpanded, setFlowExpanded] = useState(true);
 
   if (isUser) {
     return (
@@ -332,15 +335,15 @@ function MessageItem({ msg, isStreaming }: { msg: ChatMessage; isStreaming?: boo
   }
 
   // ── Assistant 消息 ──
-  // 宽度由内容决定（fit-content），最宽 80%，和用户气泡逻辑一致
-  const isThinking = isStreaming && !msg.content;
+  const hasAgentSteps = msg.agentSteps && msg.agentSteps.length > 0;
+  const isThinking = isStreaming && !msg.content && !hasAgentSteps;
 
   return (
     <div
       style={{
-        display: "inline-block",   // 让宽度由内容决定
-        maxWidth: "80%",           // 最宽 80%，超出自动换行
-        width: "fit-content",      // 内容多少宽多少
+        display: "inline-block",
+        maxWidth: hasAgentSteps ? "90%" : "80%",
+        width: hasAgentSteps ? "90%" : "fit-content",
         padding: "12px 16px",
         borderRadius: "12px",
         backgroundColor: "var(--card-bg)",
@@ -350,15 +353,80 @@ function MessageItem({ msg, isStreaming }: { msg: ChatMessage; isStreaming?: boo
         wordBreak: "break-word",
         overflowWrap: "break-word",
         verticalAlign: "top",
+        position: "relative",
       }}
     >
+      {/* 气泡右上角：流程图收起/展开按钮 */}
+      {hasAgentSteps && (
+        <button
+          onClick={() => setFlowExpanded((v) => !v)}
+          title={flowExpanded ? "收起执行过程" : "展开执行过程"}
+          style={{
+            position: "absolute",
+            top: "10px",
+            right: "12px",
+            display: "flex",
+            alignItems: "center",
+            gap: "3px",
+            padding: "2px 7px",
+            borderRadius: "5px",
+            border: "1px solid var(--border-subtle)",
+            backgroundColor: "transparent",
+            color: "var(--text-muted)",
+            fontSize: "10px",
+            cursor: "pointer",
+            outline: "none",
+            transition: "all 0.15s ease",
+            zIndex: 1,
+          }}
+          onMouseEnter={(e) => {
+            (e.currentTarget as HTMLButtonElement).style.backgroundColor = "rgba(255,255,255,0.05)";
+            (e.currentTarget as HTMLButtonElement).style.color = "var(--text-secondary)";
+          }}
+          onMouseLeave={(e) => {
+            (e.currentTarget as HTMLButtonElement).style.backgroundColor = "transparent";
+            (e.currentTarget as HTMLButtonElement).style.color = "var(--text-muted)";
+          }}
+        >
+          <GitFork size={10} />
+          {flowExpanded
+            ? <ChevronDown size={10} />
+            : <ChevronRight size={10} />
+          }
+        </button>
+      )}
+
+      {/* Agent 流程图（可收起） */}
+      {hasAgentSteps && flowExpanded && (
+        <div style={{ paddingRight: hasAgentSteps ? "60px" : "0" }}>
+          <AgentFlowChart
+            steps={msg.agentSteps!}
+            streaming={isStreaming}
+          />
+        </div>
+      )}
+
+      {/* 流程图收起时的精简提示 */}
+      {hasAgentSteps && !flowExpanded && (
+        <div style={{
+          fontSize: "11px",
+          color: "var(--text-muted)",
+          marginBottom: "8px",
+          paddingRight: "60px",
+        }}>
+          {msg.agentSteps!.length} 个工具调用已完成
+        </div>
+      )}
+
+      {/* 回复内容 */}
       <div style={{ fontSize: "14px", lineHeight: "1.7" }}>
         {isThinking ? (
           <ThinkingDots />
         ) : (
           <>
-            <MarkdownContent content={msg.content} />
-            {isStreaming && <StreamingCursor />}
+            {msg.content && <MarkdownContent content={msg.content} />}
+            {hasAgentSteps && !msg.content && isStreaming && <ThinkingDots />}
+            {isStreaming && msg.content && <StreamingCursor />}
           </>
         )}
       </div>

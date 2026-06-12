@@ -7,9 +7,14 @@
  * Store 设计：
  *   conversations  - 会话元信息（标题、模型、时间等）
  *   messages       - 消息记录（按 conversationId 索引）
+ *
+ * 版本历史：
+ *   v1 - 初始版本
+ *   v2 - MessageRow.meta 新增 agentSteps 字段（Agent 流程图持久化）
  */
 
 import { openDB, type DBSchema, type IDBPDatabase } from "idb";
+import type { AgentStep } from "@/lib/mock-chat-data";
 
 // ── Schema 类型定义 ──
 export interface ConversationRow {
@@ -35,6 +40,8 @@ export interface MessageRow {
     outputTokens?: number;
     wordCount?: number;
     ctxPercent?: number;
+    /** Agent 流程图数据，流式结束后持久化，切换会话时恢复 */
+    agentSteps?: AgentStep[];
   };
   createdAt: number;    // timestamp ms，排序用
 }

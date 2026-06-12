@@ -2,6 +2,7 @@ import {
   MessageSquare,
   History,
   Users,
+  BrainCircuit,
   Puzzle,
   LayoutDashboard,
   Moon,
@@ -38,6 +39,7 @@ export const navGroups: NavGroup[] = [
     label: "协作",
     items: [
       { label: "协作交流", href: "/corwork", icon: Users },
+      { label: "Agent蜂巢", href: "/corwork/think-tank", icon: BrainCircuit },
     ],
   },
   {
