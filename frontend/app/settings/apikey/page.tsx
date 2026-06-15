@@ -277,9 +277,9 @@ function KeyFormModal({
             label="模型名"
             value={modelName}
             onChange={setModelName}
-            placeholder={isMaaS ? "如：deepseek-v4-flash、claude sonnet 4.6" : "如：gpt-4o、deepseek-v4-flash、claude-opus-4-5"}
+            placeholder={isMaaS ? "如：deepseek-v4-flash、claude-sonnet-4-5" : "如：gpt-4o、deepseek-v4-flash、claude-opus-4-5"}
             required
-            hint={isMaaS ? "MaaS 网关模型 ID，填写平台提供的模型名" : "调用 API 时使用的模型 ID"}
+            hint={isMaaS ? "企业网关模型 ID，填写平台提供的模型名" : "调用 API 时使用的模型 ID"}
           />
 
           {/* API Key */}
@@ -398,12 +398,12 @@ function KeyFormModal({
               border: "1px solid rgba(59,130,246,0.25)",
             }}>
               <span style={{ fontSize: "12px", color: "var(--accent-blue)", lineHeight: 1.5 }}>
-                检测到 MaaS 网关，需要额外 Header 认证。
+                检测到企业网关，可能需要额外 Header 认证。
               </span>
               <button
                 type="button"
                 onClick={() => setExtraHeadersText(
-                  `x-maas-user-email: your-email@company.com\nx-maas-app-id: your-app-id`
+                  `x-custom-header: your-value\nx-app-id: your-app-id`
                 )}
                 style={{
                   flexShrink: 0, padding: "2px 8px", borderRadius: "5px",
@@ -426,7 +426,7 @@ function KeyFormModal({
             <textarea
               value={extraHeadersText}
               onChange={(e) => setExtraHeadersText(e.target.value)}
-              placeholder={"每行一条，格式：Key: Value\n例：x-maas-user-email: you@company.com\n    x-maas-app-id: qs-api"}
+              placeholder={"每行一条，格式：Key: Value\n例：x-custom-header: your-value\n    x-app-id: your-app-id"}
               rows={3}
               style={{
                 padding: "8px 10px",
