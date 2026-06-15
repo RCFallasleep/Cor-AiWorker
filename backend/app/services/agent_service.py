@@ -52,6 +52,20 @@ async def stream_agent(body: ChatRequest) -> AsyncGenerator[str, None]:
     - {"type": "error",          "message": "..."}
     """
     try:
+        # Bedrock / Vertex AI 原生协议不支持 Function Calling，降级为普通 chat
+        if body.provider == "bedrock":
+            logger.info("agent: bedrock protocol detected, fallback to plain chat (no tool calling)")
+            from app.services.chat_service import _stream_bedrock  # 避免循环导入
+            async for chunk in _stream_bedrock(body):
+                yield chunk
+            return
+        if body.provider == "vertex":
+            logger.info("agent: vertex protocol detected, fallback to plain chat (no tool calling)")
+            from app.services.chat_service import _stream_vertex  # 避免循环导入
+            async for chunk in _stream_vertex(body):
+                yield chunk
+            return
+
         async for chunk in _agent_loop_openai(body):
             yield chunk
     except Exception as exc:
@@ -82,6 +96,7 @@ async def _agent_loop_openai(body: ChatRequest) -> AsyncGenerator[str, None]:
     client = openai.AsyncOpenAI(
         api_key=body.api_key,
         base_url=body.base_url or None,
+        default_headers=body.extra_headers or None,
     )
 
     # 构建初始消息列表

@@ -16,13 +16,21 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-from app.api.v1 import agent as agent_router  # noqa: E402
-from app.api.v1 import chat as chat_router    # noqa: E402
-from app.api.v1 import logs as logs_router    # noqa: E402
-from app.services import log_store            # noqa: E402
+from app.api.v1 import agent as agent_router          # noqa: E402
+from app.api.v1 import chat as chat_router            # noqa: E402
+from app.api.v1 import logs as logs_router            # noqa: E402
+from app.api.v1 import livebench as livebench_router  # noqa: E402
+from app.api.v1 import organize as organize_router              # noqa: E402
+from app.api.v1 import deduction as deduction_router            # noqa: E402
+from app.api.v1 import graph_deduction as graph_deduction_router  # noqa: E402
+from app.api.v1 import discussion as discussion_router            # noqa: E402
+from app.api.v1 import skills as skills_router                    # noqa: E402
+from app.services import log_store                  # noqa: E402
+from app.services import skill_store                # noqa: E402
 
 # 导入 tools 模块，触发工具注册到全局 tool_registry
 import app.tools.search  # noqa: F401, E402
+from app.tools.skill_runner import load_enabled_skills  # noqa: E402
 
 
 # ── 应用生命周期 ──────────────────────────────────────────────────────────────
@@ -33,6 +41,12 @@ async def lifespan(app: FastAPI):
     # 启动：初始化 SQLite 日志数据库
     await log_store.init_db()
     logger.info("log_store initialized")
+    # 启动：初始化 Skill 数据库并种入内置 Skill
+    skill_store.seed_builtin_skills()
+    logger.info("skill_store initialized")
+    # 加载用户自建 Skill 到 tool_registry
+    n = load_enabled_skills()
+    logger.info("custom skills loaded | count=%d", n)
     yield
     # 关闭：无需额外清理
 
@@ -54,6 +68,12 @@ setup_cors(app)
 app.include_router(chat_router.router, prefix="/v1")
 app.include_router(agent_router.router, prefix="/v1")
 app.include_router(logs_router.router, prefix="/v1")
+app.include_router(livebench_router.router, prefix="/v1")
+app.include_router(organize_router.router, prefix="/v1")
+app.include_router(deduction_router.router, prefix="/v1")
+app.include_router(graph_deduction_router.router, prefix="/v1")
+app.include_router(discussion_router.router, prefix="/v1")
+app.include_router(skills_router.router, prefix="/v1")
 
 
 # ── 健康检查 ──────────────────────────────────────────────────────────────────

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   ChevronDown,
   RefreshCw,
@@ -10,14 +10,21 @@ import {
   User,
   SquarePen,
   StopCircle,
-  Key,
   MessageSquare,
+  Sparkles,
+  BrainCircuit,
+  PenLine,
+  ShieldCheck,
+  Zap,
+  BookOpen,
+  Globe,
+  Code2,
+  Search as SearchIcon,
+  Plus,
 } from "lucide-react";
 import Link from "next/link";
-import { useAvailableModels } from "@/lib/hooks/use-available-models";
-import { getProviderLabel } from "@/lib/providers-config";
-import type { AvailableModel } from "@/lib/hooks/use-available-models";
-import type { ConversationRow } from "@/lib/db/idb";
+import { agentRepo } from "@/lib/repositories/agent-repository";
+import type { AgentRow, ConversationRow } from "@/lib/db/idb";
 
 // ── 会话选择器（替代原 branch 选择器）──
 function ConversationSelector({
@@ -121,35 +128,40 @@ function ConversationSelector({
   );
 }
 
-// ── 模型选择器（只显示有激活 Key 的 Provider 分组）──
-function ModelSelector({
+// ── Agent 图标映射 ──
+const AGENT_ICON_MAP: Record<string, React.ReactNode> = {
+  Search:       <SearchIcon size={14} />,
+  BrainCircuit: <BrainCircuit size={14} />,
+  PenLine:      <PenLine size={14} />,
+  ShieldCheck:  <ShieldCheck size={14} />,
+  Sparkles:     <Sparkles size={14} />,
+  Zap:          <Zap size={14} />,
+  BookOpen:     <BookOpen size={14} />,
+  Globe:        <Globe size={14} />,
+  Code2:        <Code2 size={14} />,
+};
+
+// ── Agent 选择器 ──
+function AgentSelector({
   value,
-  models,
   onChange,
-  loading,
 }: {
-  value: string;
-  models: AvailableModel[];
-  onChange: (id: string) => void;
-  loading: boolean;
+  value: string;        // AgentRow.id，空字符串表示未选择
+  onChange: (agent: AgentRow | null) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [agents, setAgents] = useState<AgentRow[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  // models 已经是从 SQLite 激活 Key 生成的，直接使用
-  const availableModels = models;
-  const current = availableModels.find((m) => m.id === value) ?? availableModels[0];
-  const hasAnyKey = availableModels.length > 0;
+  useEffect(() => {
+    agentRepo.list().then((list) => {
+      setAgents(list);
+      setLoading(false);
+    });
+  }, []);
 
-  // 按 provider 分组（只含有 Key 的）
-  const grouped = availableModels.reduce<Record<string, AvailableModel[]>>((acc, m) => {
-    if (!acc[m.provider]) acc[m.provider] = [];
-    acc[m.provider].push(m);
-    return acc;
-  }, {});
-
-  // 保持 provider 顺序
-  const providerOrder = ["anthropic", "openai", "deepseek", "gemini", "custom"];
-  const visibleProviders = providerOrder.filter((p) => grouped[p]?.length);
+  const current = agents.find((a) => a.id === value) ?? null;
+  const hasAgents = agents.length > 0;
 
   return (
     <div style={{ position: "relative" }}>
@@ -157,95 +169,115 @@ function ModelSelector({
         onClick={() => setOpen((v) => !v)}
         style={{
           display: "flex", alignItems: "center", gap: "6px",
-          padding: "6px 10px",
-          backgroundColor: "var(--card-bg)",
-          border: "1px solid var(--border-color)",
+          padding: "5px 10px",
+          backgroundColor: current ? "rgba(99,102,241,0.1)" : "var(--card-bg)",
+          border: `1px solid ${current ? "rgba(99,102,241,0.35)" : "var(--border-color)"}`,
           borderRadius: "8px",
-          color: hasAnyKey ? "var(--text-primary)" : "var(--text-muted)",
+          color: current ? "#818cf8" : "var(--text-muted)",
           fontSize: "13px", cursor: "pointer", whiteSpace: "nowrap", outline: "none",
+          transition: "all 0.15s",
         }}
       >
-        <span>
-          {loading ? "加载中..." : hasAnyKey ? (current?.label ?? "选择模型") : "无可用模型"}
-        </span>
+        {current ? (
+          <>
+            {/* Agent 图标小圆 */}
+            <span style={{
+              width: "18px", height: "18px", borderRadius: "5px",
+              backgroundColor: current.iconColor,
+              display: "flex", alignItems: "center", justifyContent: "center",
+              color: "rgba(255,255,255,0.9)", flexShrink: 0,
+            }}>
+              {AGENT_ICON_MAP[current.iconName] ?? <Sparkles size={11} />}
+            </span>
+            <span style={{ maxWidth: "120px", overflow: "hidden", textOverflow: "ellipsis" }}>
+              {current.name}
+            </span>
+          </>
+        ) : (
+          <span style={{ color: "var(--text-muted)" }}>
+            {loading ? "加载中..." : "选择 Agent"}
+          </span>
+        )}
         <ChevronDown size={13} style={{ color: "var(--text-secondary)", flexShrink: 0 }} />
       </button>
 
       {open && (
         <>
           <div style={{ position: "fixed", inset: 0, zIndex: 10 }} onClick={() => setOpen(false)} />
-          <div
-            style={{
-              position: "absolute", top: "calc(100% + 4px)", left: 0, zIndex: 20,
-              backgroundColor: "var(--card-bg)", border: "1px solid var(--border-color)",
-              borderRadius: "10px", padding: "6px",
-              minWidth: "220px", maxHeight: "360px", overflowY: "auto",
-              boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
-            }}
-          >
-            {/* 无任何 Key 时的空状态 */}
-            {!hasAnyKey && (
+          <div style={{
+            position: "absolute", top: "calc(100% + 4px)", left: 0, zIndex: 20,
+            backgroundColor: "var(--card-bg)", border: "1px solid var(--border-color)",
+            borderRadius: "10px", padding: "6px",
+            minWidth: "240px", maxHeight: "360px", overflowY: "auto",
+            boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
+          }}>
+            {/* 标题 */}
+            <div style={{ padding: "4px 10px 6px" }}>
+              <span style={{ fontSize: "11px", color: "var(--text-muted)", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                选择 Agent
+              </span>
+            </div>
+
+            {/* 无 Agent 时的空状态 */}
+            {!hasAgents && !loading && (
               <div style={{ padding: "12px 10px", textAlign: "center" }}>
                 <p style={{ fontSize: "12px", color: "var(--text-muted)", margin: "0 0 8px" }}>
-                  尚未配置任何 API Key
+                  还没有创建 Agent
                 </p>
                 <Link
-                  href="/settings/apikey"
+                  href="/health/agent"
                   onClick={() => setOpen(false)}
                   style={{
                     display: "inline-flex", alignItems: "center", gap: "4px",
                     fontSize: "12px", color: "var(--accent-blue)", textDecoration: "none",
                   }}
                 >
-                  <Key size={11} /> 前往添加 Key
+                  <Plus size={11} /> 去创建 Agent
                 </Link>
               </div>
             )}
 
-            {/* 按 provider 分组，只渲染有 Key 的组 */}
-            {visibleProviders.map((provider, idx) => {
-              const group = grouped[provider];
-              const isLast = idx === visibleProviders.length - 1;
-              return (
-                <div key={provider}>
-                  {/* Provider 标题（使用共享配置的 label）*/}
-                  <div style={{ padding: "4px 10px 2px" }}>
-                    <span style={{
-                      fontSize: "11px", color: "var(--text-muted)",
-                      fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em",
-                    }}>
-                      {getProviderLabel(provider)}
-                    </span>
+            {/* Agent 列表 */}
+            {agents.map((agent) => (
+              <button
+                key={agent.id}
+                onClick={() => { onChange(agent); setOpen(false); }}
+                style={{
+                  display: "flex", alignItems: "center", gap: "10px",
+                  width: "100%", textAlign: "left",
+                  padding: "8px 10px", borderRadius: "7px", border: "none",
+                  backgroundColor: agent.id === value ? "var(--sidebar-active)" : "transparent",
+                  color: agent.id === value ? "var(--accent-blue)" : "var(--text-primary)",
+                  fontSize: "13px", cursor: "pointer", outline: "none",
+                  transition: "background-color 0.1s",
+                }}
+                onMouseEnter={(e) => {
+                  if (agent.id !== value) (e.currentTarget as HTMLElement).style.backgroundColor = "var(--sidebar-hover)";
+                }}
+                onMouseLeave={(e) => {
+                  if (agent.id !== value) (e.currentTarget as HTMLElement).style.backgroundColor = "transparent";
+                }}
+              >
+                {/* Agent 图标 */}
+                <span style={{
+                  width: "28px", height: "28px", borderRadius: "7px",
+                  backgroundColor: agent.iconColor,
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  color: "rgba(255,255,255,0.9)", flexShrink: 0,
+                }}>
+                  {AGENT_ICON_MAP[agent.iconName] ?? <Sparkles size={14} />}
+                </span>
+                {/* Agent 信息 */}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: "13px", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {agent.name}
                   </div>
-
-                  {/* 模型列表 */}
-                  {group.map((m) => (
-                    <button
-                      key={m.id}
-                      onClick={() => { onChange(m.id); setOpen(false); }}
-                      style={{
-                        display: "flex", alignItems: "center", justifyContent: "space-between",
-                        width: "100%", textAlign: "left",
-                        padding: "7px 10px", borderRadius: "6px", border: "none",
-                        backgroundColor: m.id === value ? "var(--sidebar-active)" : "transparent",
-                        color: m.id === value ? "var(--accent-blue)" : "var(--text-primary)",
-                        fontSize: "13px", cursor: "pointer", outline: "none",
-                      }}
-                    >
-                      <span>{m.label}</span>
-                      {m.supportsVision && (
-                        <span style={{ fontSize: "10px", color: "var(--text-muted)" }}>视觉</span>
-                      )}
-                    </button>
-                  ))}
-
-                  {/* 分组间分隔线（最后一组不加）*/}
-                  {!isLast && (
-                    <div style={{ height: "1px", backgroundColor: "var(--border-subtle)", margin: "4px 0" }} />
-                  )}
+                  <div style={{ fontSize: "11px", color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {agent.model} · Lv.{agent.level}
+                  </div>
                 </div>
-              );
-            })}
+              </button>
+            ))}
           </div>
         </>
       )}
@@ -316,8 +348,8 @@ export function ChatToolbar({
   conversationId,
   conversations,
   onConversationChange,
-  modelId,
-  onModelChange,
+  agentId,
+  onAgentChange,
   streaming = false,
   onAbort,
   onNewConversation,
@@ -325,14 +357,12 @@ export function ChatToolbar({
   conversationId: string | null;
   conversations: ConversationRow[];
   onConversationChange: (id: string | null) => void;
-  modelId: string;
-  onModelChange: (m: string) => void;
+  agentId: string;
+  onAgentChange: (agent: AgentRow | null) => void;
   streaming?: boolean;
   onAbort?: () => void;
   onNewConversation?: () => void;
 }) {
-  const { models, loading } = useAvailableModels();
-
   return (
     <div
       style={{
@@ -343,7 +373,7 @@ export function ChatToolbar({
         flexShrink: 0, gap: "8px",
       }}
     >
-      {/* 左侧：新对话按钮 + 会话选择器 + 模型选择 */}
+      {/* 左侧：新对话按钮 + 会话选择器 + Agent 选择 */}
       <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
         <ToolBtn title="新对话" onClick={onNewConversation}>
           <SquarePen size={15} />
@@ -353,11 +383,9 @@ export function ChatToolbar({
           conversations={conversations}
           onChange={onConversationChange}
         />
-        <ModelSelector
-          value={modelId}
-          models={models}
-          onChange={onModelChange}
-          loading={loading}
+        <AgentSelector
+          value={agentId}
+          onChange={onAgentChange}
         />
 
         {/* 流式输出中：显示中止按钮 */}

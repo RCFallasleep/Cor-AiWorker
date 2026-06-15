@@ -38,23 +38,25 @@ export async function getDb(): Promise<Database> {
     // 建表（幂等）
     _db.run(`
       CREATE TABLE IF NOT EXISTS api_keys (
-        id          TEXT PRIMARY KEY,
-        provider    TEXT NOT NULL,
-        label       TEXT NOT NULL,
-        key_value   TEXT NOT NULL,
-        model_name  TEXT,
-        base_url    TEXT,
-        is_active   INTEGER NOT NULL DEFAULT 1,
-        created_at  TEXT NOT NULL,
-        updated_at  TEXT NOT NULL
+        id           TEXT PRIMARY KEY,
+        provider     TEXT NOT NULL,
+        label        TEXT NOT NULL,
+        key_value    TEXT NOT NULL,
+        model_name   TEXT,
+        base_url     TEXT,
+        extra_headers TEXT,
+        is_active    INTEGER NOT NULL DEFAULT 1,
+        created_at   TEXT NOT NULL,
+        updated_at   TEXT NOT NULL
       );
     `);
 
-    // 迁移：为已有表补充 model_name 列（幂等，列已存在时忽略错误）
-    try {
-      _db.run(`ALTER TABLE api_keys ADD COLUMN model_name TEXT;`);
-    } catch {
-      // 列已存在，忽略
+    // 迁移：为已有表补充缺失列（幂等，列已存在时忽略错误）
+    for (const ddl of [
+      `ALTER TABLE api_keys ADD COLUMN model_name TEXT;`,
+      `ALTER TABLE api_keys ADD COLUMN extra_headers TEXT;`,
+    ]) {
+      try { _db.run(ddl); } catch { /* 列已存在，忽略 */ }
     }
 
     persistDb(_db);

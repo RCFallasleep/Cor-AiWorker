@@ -93,20 +93,31 @@ function ConvRow({
         </div>
       </td>
 
-      {/* Agent（mock: main，后续接入真实 Agent） */}
+      {/* Agent */}
       <td style={{ padding: "12px 16px", verticalAlign: "middle", whiteSpace: "nowrap" }}>
-        <span
-          style={{
+        {conv.agentName ? (
+          <span style={{
             display: "inline-block",
             fontSize: "11px", fontWeight: 500,
-            color: "var(--accent-blue)",
-            backgroundColor: "rgba(59,130,246,0.12)",
+            color: "#818cf8",
+            backgroundColor: "rgba(99,102,241,0.12)",
             padding: "2px 8px", borderRadius: "20px",
-            border: "1px solid rgba(59,130,246,0.2)",
-          }}
-        >
-          main
-        </span>
+            border: "1px solid rgba(99,102,241,0.2)",
+          }}>
+            {conv.agentName}
+          </span>
+        ) : (
+          <span style={{
+            display: "inline-block",
+            fontSize: "11px", fontWeight: 500,
+            color: "var(--text-muted)",
+            backgroundColor: "rgba(255,255,255,0.05)",
+            padding: "2px 8px", borderRadius: "20px",
+            border: "1px solid var(--border-subtle)",
+          }}>
+            {conv.modelLabel || "—"}
+          </span>
+        )}
       </td>
 
       {/* 预览 */}

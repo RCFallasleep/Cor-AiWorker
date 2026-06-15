@@ -16,6 +16,8 @@ export interface CreateConversationInput {
   title: string;
   modelLabel: string;
   modelKeyId: string;
+  agentId?: string;
+  agentName?: string;
 }
 
 export interface AppendMessageInput {
@@ -78,6 +80,8 @@ export class IdbConversationRepository implements IConversationRepository {
       title:        input.title,
       modelLabel:   input.modelLabel,
       modelKeyId:   input.modelKeyId,
+      agentId:      input.agentId,
+      agentName:    input.agentName,
       messageCount: 0,
       lastPreview:  "",
       createdAt:    now,

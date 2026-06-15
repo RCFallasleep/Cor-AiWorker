@@ -16,15 +16,18 @@ export function detectProtocol(keyValue: string): "anthropic" | "openai" {
 }
 
 // ── 类型定义 ──
+export type ProviderType = "openai" | "anthropic" | "bedrock" | "vertex";
+
 export interface ApiKeyRecord {
   id: string;
-  provider: string;    // 由 detectProtocol 自动推断：'openai' | 'anthropic'
-  label: string;       // 等同于 modelName，方便显示
-  keyValue: string;    // 实际 API Key
-  modelName?: string;  // 调用 API 时使用的模型名，如 "deepseek-v4-flash"
-  baseUrl?: string;    // 自定义 Base URL（可选）
+  provider: ProviderType;  // 协议类型：openai / anthropic / bedrock / vertex
+  label: string;           // 等同于 modelName，方便显示
+  keyValue: string;        // 实际 API Key
+  modelName?: string;      // 调用 API 时使用的模型名，如 "deepseek-v4-flash"
+  baseUrl?: string;        // 自定义 Base URL（可选）
+  extraHeaders?: Record<string, string>;  // 额外 HTTP Header，如 MaaS 网关需要的 token
   isActive: boolean;
-  createdAt: string;   // ISO string
+  createdAt: string;       // ISO string
   updatedAt: string;
 }
 
@@ -46,6 +49,11 @@ function generateId(): string {
 }
 
 function rowToRecord(row: Record<string, unknown>): ApiKeyRecord {
+  let extraHeaders: Record<string, string> | undefined;
+  const raw = row.extra_headers as string | null;
+  if (raw) {
+    try { extraHeaders = JSON.parse(raw); } catch { /* 忽略损坏数据 */ }
+  }
   return {
     id: row.id as string,
     provider: row.provider as string,
@@ -53,6 +61,7 @@ function rowToRecord(row: Record<string, unknown>): ApiKeyRecord {
     keyValue: row.key_value as string,
     modelName: (row.model_name as string) || undefined,
     baseUrl: (row.base_url as string) || undefined,
+    extraHeaders,
     isActive: (row.is_active as number) === 1,
     createdAt: row.created_at as string,
     updatedAt: row.updated_at as string,
@@ -88,8 +97,8 @@ export class SqliteApiKeyRepository implements IApiKeyRepository {
     const now = new Date().toISOString();
     const id = generateId();
     db.run(
-      `INSERT INTO api_keys (id, provider, label, key_value, model_name, base_url, is_active, created_at, updated_at)
-       VALUES (:id, :provider, :label, :key_value, :model_name, :base_url, :is_active, :created_at, :updated_at)`,
+      `INSERT INTO api_keys (id, provider, label, key_value, model_name, base_url, extra_headers, is_active, created_at, updated_at)
+       VALUES (:id, :provider, :label, :key_value, :model_name, :base_url, :extra_headers, :is_active, :created_at, :updated_at)`,
       {
         ":id": id,
         ":provider": input.provider,
@@ -97,6 +106,7 @@ export class SqliteApiKeyRepository implements IApiKeyRepository {
         ":key_value": input.keyValue,
         ":model_name": input.modelName ?? null,
         ":base_url": input.baseUrl ?? null,
+        ":extra_headers": input.extraHeaders ? JSON.stringify(input.extraHeaders) : null,
         ":is_active": input.isActive ? 1 : 0,
         ":created_at": now,
         ":updated_at": now,
@@ -118,6 +128,7 @@ export class SqliteApiKeyRepository implements IApiKeyRepository {
       `UPDATE api_keys
        SET provider = :provider, label = :label, key_value = :key_value,
            model_name = :model_name, base_url = :base_url,
+           extra_headers = :extra_headers,
            is_active = :is_active, updated_at = :updated_at
        WHERE id = :id`,
       {
@@ -127,6 +138,7 @@ export class SqliteApiKeyRepository implements IApiKeyRepository {
         ":key_value": merged.keyValue,
         ":model_name": merged.modelName ?? null,
         ":base_url": merged.baseUrl ?? null,
+        ":extra_headers": merged.extraHeaders ? JSON.stringify(merged.extraHeaders) : null,
         ":is_active": merged.isActive ? 1 : 0,
         ":updated_at": now,
       }

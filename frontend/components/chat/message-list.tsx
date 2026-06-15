@@ -300,22 +300,47 @@ function MessageItem({ msg, isStreaming }: { msg: ChatMessage; isStreaming?: boo
   const [flowExpanded, setFlowExpanded] = useState(true);
 
   if (isUser) {
+    const imagePreviews: string[] = (msg.meta as { imagePreviews?: string[] } | undefined)?.imagePreviews ?? [];
     return (
       <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "4px", padding: "4px 0" }}>
-        <div
-          style={{
-            maxWidth: "72%",
-            backgroundColor: "var(--accent-blue)",
-            color: "#fff",
-            padding: "10px 14px",
-            borderRadius: "14px 14px 4px 14px",
-            fontSize: "14px",
-            lineHeight: "1.6",
-            wordBreak: "break-word",
-          }}
-        >
-          {msg.content}
-        </div>
+        {/* 图片附件（气泡上方） */}
+        {imagePreviews.length > 0 && (
+          <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", justifyContent: "flex-end", maxWidth: "72%" }}>
+            {imagePreviews.map((src, i) => (
+              <img
+                key={i}
+                src={src}
+                alt={`附件图片 ${i + 1}`}
+                style={{
+                  width: 80,
+                  height: 80,
+                  objectFit: "cover",
+                  borderRadius: 10,
+                  border: "1px solid rgba(255,255,255,0.15)",
+                  cursor: "pointer",
+                }}
+                onClick={() => window.open(src, "_blank")}
+              />
+            ))}
+          </div>
+        )}
+        {/* 文字气泡（无文字时不渲染） */}
+        {msg.content && (
+          <div
+            style={{
+              maxWidth: "72%",
+              backgroundColor: "var(--accent-blue)",
+              color: "#fff",
+              padding: "10px 14px",
+              borderRadius: "14px 14px 4px 14px",
+              fontSize: "14px",
+              lineHeight: "1.6",
+              wordBreak: "break-word",
+            }}
+          >
+            {msg.content}
+          </div>
+        )}
         <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
           <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>{msg.username ?? "You"}</span>
           <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>{msg.timestamp}</span>

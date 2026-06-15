@@ -26,6 +26,16 @@ import type { ChatMessage } from "@/lib/mock-chat-data";
 import type { AvailableModel } from "@/lib/hooks/use-available-models";
 import type { ClientContext } from "@/lib/hooks/use-client-context";
 
+/** 图片附件（base64 data URL） */
+export interface ImageAttachment {
+  id: string;
+  name: string;
+  type: "image";
+  preview: string; // base64 data URL
+}
+
+export type Attachment = ImageAttachment;
+
 export interface StreamState {
   streaming: boolean;
   error: string | null;
@@ -67,28 +77,73 @@ function getEndpoint(agentMode: boolean): string {
   return "/api/chat"; // 回退：仅支持普通 chat
 }
 
+/** 将附件 + 文字组合成 OpenAI vision 格式的 content */
+function buildUserContent(
+  text: string,
+  attachments: Attachment[],
+): string | Array<{ type: string; [k: string]: unknown }> {
+  const images = attachments.filter((a) => a.type === "image") as ImageAttachment[];
+  if (images.length === 0) return text;
+
+  const parts: Array<{ type: string; [k: string]: unknown }> = [];
+  for (const img of images) {
+    parts.push({
+      type: "image_url",
+      image_url: { url: img.preview, detail: "auto" },
+    });
+  }
+  if (text.trim()) {
+    parts.push({ type: "text", text });
+  }
+  return parts;
+}
+
 /** 统一构造请求 body，兼容后端（snake_case）与内置路由（camelCase）两种格式 */
 function buildRequestBody(
   model: AvailableModel,
   messages: { role: "user" | "assistant"; content: string }[],
   context?: ClientContext,
   sessionId?: string | null,
+  systemPrompt?: string,
+  /** 当前用户消息的附件（图片等），用于替换最后一条 user 消息的 content */
+  attachments?: Attachment[],
 ): string {
+  // 如果有 Agent system prompt，注入为第一条 system 消息
+  const baseMessages: { role: string; content: unknown }[] = systemPrompt
+    ? [{ role: "system", content: systemPrompt }, ...messages]
+    : [...messages];
+
+  // 最后一条 user 消息如果有图片附件，替换为多模态 content
+  if (attachments && attachments.length > 0) {
+    const lastIdx = baseMessages.length - 1;
+    if (lastIdx >= 0 && baseMessages[lastIdx].role === "user") {
+      const lastContent = baseMessages[lastIdx].content as string;
+      baseMessages[lastIdx] = {
+        role: "user",
+        content: buildUserContent(lastContent, attachments),
+      };
+    }
+  }
+
   if (BACKEND_URL) {
     return JSON.stringify({
-      messages,
+      messages: baseMessages,
       model: model.apiName,
       api_key: model.keyValue,
       base_url: model.baseUrl ?? null,
+      extra_headers: model.keyRecord.extraHeaders ?? null,
+      provider: model.keyRecord.provider,
       context: context ?? null,
       session_id: sessionId ?? null,
     });
   }
   return JSON.stringify({
-    messages,
+    messages: baseMessages,
     model: model.apiName,
     apiKey: model.keyValue,
     baseUrl: model.baseUrl,
+    extraHeaders: model.keyRecord.extraHeaders,
+    provider: model.keyRecord.provider,
   });
 }
 
@@ -111,6 +166,10 @@ export function useChatStream() {
       context?: ClientContext,
       /** 前端会话 ID，用于后端日志关联 */
       sessionId?: string | null,
+      /** Agent 的 system prompt，注入为第一条 system 消息 */
+      systemPrompt?: string,
+      /** 当前消息的图片附件 */
+      attachments?: Attachment[],
     ) => {
       setState({ streaming: true, error: null });
 
@@ -127,7 +186,7 @@ export function useChatStream() {
         const res = await fetch(endpoint, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: buildRequestBody(model, messages, context, sessionId),
+          body: buildRequestBody(model, messages, context, sessionId, systemPrompt, attachments),
           signal: abortRef.current.signal,
         });
 

@@ -2,53 +2,179 @@
 
 > 项目名称：Cor-AiWorker
 > 项目定位：基于多 Agent 协作的团队开发对齐系统
-> 技术选型：Web 前端 Next.js 14 + React + TypeScript + Tailwind CSS + shadcn/ui / 后端 Python + FastAPI + LangChain（部分编排自实现）/ 客户端 Android（Compose，按需）
+> 技术选型：Web 前端 Next.js 15 + React + TypeScript / 后端 Python + FastAPI（编排自实现）/ 客户端 Android（Compose，按需）
 
 ---
 
-## 当前阶段：Phase 2-4 — Agent 养成系统
+## 当前阶段：Phase 4 — MCP/Skill 建设 & 多模态 Chat
 
-**状态**：进行中
-**开始时间**：2026-06-12
-**完成时间**：-
+**状态**：已完成（Skills 看板 + 多模态图片输入 + 粘贴截图）
+**开始时间**：2026-06-15
+**最后更新**：2026-06-15
 
 ### 阶段说明
 
-Agent 是整个协作系统的基础单元，后续的多 Agent 构建、协作交流（蜂巢）都依赖 Agent 库。
-本阶段目标：建立完整的 Agent 定义、存储、管理体系，并将 Agent 接入聊天对话。
+在 Phase 3 多 Agent 推演能力的基础上，本阶段完成两条主线：
+1. **Skills 看板**：后端 SQLite 持久化 + CRUD API，前端仓库风格预览弹窗，内置 Skill 种子数据自动同步
+2. **多模态 Chat**：根据模型 `supportsVision` 字段动态开关图片上传，支持 OpenAI/Anthropic/Bedrock 三种协议的多模态格式转换，以及系统截图/QQ/微信截图直接粘贴
 
-Agent 被视为一种**能力实体**，包含静态配置（基础信息）和动态评价（能力成长）两个维度。
+### Phase 4 任务清单
 
-### Phase 2-4 任务清单
+#### 后端 — Skills 持久化与 API（已完成）
+- [x] `skill_store.py`：SQLite 两张表（`skills` + `skill_files`），完整 CRUD + 文件 upsert + 语言自动识别 + GitHub 风格构成比例计算
+- [x] `_BUILTIN_SKILLS` 列表：内置 Skill 定义（含完整真实代码，如 `search.py` 150 行）
+- [x] `seed_builtin_skills()`：幂等初始化，已存在则只同步文件内容，不改元数据
+- [x] `skills.py` 路由：`GET/POST /v1/skills`、`GET/PATCH/DELETE /v1/skills/{id}`、`PUT /v1/skills/{id}/files`、`POST /v1/skills/{id}/files/upload`（multipart）
+- [x] PATCH 时若 `enabled` 变化，动态注册/注销 `tool_registry`
+- [x] `skill_runner.py`：`register_skill_as_tool()` exec 用户 .py 文件，AST 提取参数 schema，注册到 tool_registry；`load_enabled_skills()` 启动时批量加载
+- [x] `main.py` 启动时调用 `seed_builtin_skills()` + `load_enabled_skills()`
+- [x] `requirements.txt` 新增 `python-multipart==0.0.20`（文件上传依赖）
+
+#### 后端 — 多模态消息 Schema（已完成）
+- [x] `schemas/chat.py` 新增 `TextPart` / `ImageUrlPart` / `ImageUrlDetail` Pydantic 模型
+- [x] `MessageContent = Union[str, list[Union[TextPart, ImageUrlPart]]]`，`Message.content` 支持多模态
+- [x] `chat_service.py` `_to_openai_messages()`：多模态 part 列表直接序列化
+- [x] `chat_service.py` `_to_anthropic_content()`：base64 data URL → Anthropic `image/source/base64` 格式；外部 URL → Anthropic `url source` 格式
+
+#### 前端 — Skills 看板（已完成）
+- [x] `workbench/skills/page.tsx` 全量重写
+  - `SkillCard`：卡片组件，含 GitHub 风格构成进度条、标签、启用/禁用开关、删除
+  - `CompositionBar`：彩色分段进度条 + 图例（按语言着色）
+  - `PreviewModal`：**仓库风格**弹窗，默认显示文件列表（文件夹图标 + 文件行 + 文件大小），点击文件进入内容视图，面包屑导航，Esc 返回，底部始终显示构成进度条
+  - `CreateSkillModal`：新建 Skill 表单，支持多文件编辑器 + 文件上传
+  - 主页面：搜索框 + 全部/内置/自建筛选 + 响应式网格
+
+#### 前端 — 多模态 Chat（已完成）
+- [x] `use-chat-stream.ts` 新增 `ImageAttachment` 接口 + `Attachment` 联合类型
+- [x] `buildUserContent()`：图片附件 → `{type:"image_url", image_url:{url, detail:"auto"}}` OpenAI vision 格式
+- [x] `buildRequestBody()` 新增 `attachments` 参数，替换最后一条 user 消息的 content 为多模态格式
+- [x] `chat/page.tsx` `handleSend` 接收 `attachments`，图片 base64 存入 `meta.imagePreviews`，传给 `sendMessage`
+- [x] `message-list.tsx` 用户消息气泡上方渲染图片缩略图（80×80，点击新标签页全屏查看），纯图片消息不渲染空文字气泡
+- [x] `chat-input.tsx` 新增 `handlePaste` 处理器，挂载到 textarea `onPaste`，支持系统截图和 QQ/微信截图直接粘贴（`ClipboardEvent.items` 过滤 `image/*`，`FileReader.readAsDataURL` 转 base64）
+- [x] `models-config.ts` 按模型配置 `supportsVision` 字段，控制图片上传入口显示/隐藏
+
+#### 技术亮点
+- **Skill 动态注册**：`skill_runner.py` 将用户自建 Skill 的 `.py` 文件 `exec` 后注册到 `tool_registry`，工具名格式 `skill_{snake_case_name}`，无需重启服务
+- **种子数据同步策略**：每次启动 `seed_builtin_skills()` 按名称查找已有内置 Skill，只 upsert 文件内容，不改元数据（幂等）
+- **三协议多模态**：同一套前端附件格式，后端按 `provider` 字段自动转换为 OpenAI / Anthropic / Bedrock 各自的多模态消息格式
+- **粘贴截图零配置**：`ClipboardEvent API` 拦截剪贴板图片，`FileReader` 转 base64，与文件上传走同一套附件流程
+
+---
+
+### Phase 3 任务清单
+
+#### 后端 — 组织阶段（已完成）
+- [x] `organize_service.py`：4 个 Prompt 模版 + 流式 LLM 调用 + JSON 解析
+- [x] `POST /v1/organize`：SSE 流式接口（thinking_delta / done / error 事件）
+- [x] `GET /v1/organize/templates`：返回内置模版列表
+- [x] `OrganizeRequest / OrganizeRole / OrganizeEdge / OrganizeResult` Pydantic Schema
+
+#### 后端 — 图推演阶段（已完成）
+- [x] `graph_deduction_service.py`：`asyncio` 并行启动多个 Agent 协程，拓扑排序依赖调度
+- [x] `POST /v1/deduction`：SSE 流式接口，每条事件携带 `agent_id`，前端按 id 分流渲染
+- [x] 并发限制与超时：单个 Agent 超时（120s）不影响其他 Agent 继续输出
+- [x] SSE 事件：`agent_waiting` / `agent_start` / `delta` / `agent_done` / `agent_error` / `all_done`
+
+#### 后端 — 研讨会模式（已完成）
+- [x] `discussion_service.py`：动态多轮研讨会调度器
+  - 每轮所有普通 Agent 并行发言（Round 1 独立观点，Round N 基于前轮回应）
+  - 每轮结束后组织者做「裁判」判断（非流式，低温度 0.2，`response_format: json_object`）
+  - 组织者决定是否继续下一轮，最多 `MAX_ROUNDS=5` 轮防止无限循环
+  - 最终组织者流式输出综合总结报告
+- [x] `POST /v1/discussion`：SSE 流式接口
+- [x] 新增 SSE 事件：`organizer_decision`（携带 `continue: bool` + `reason` 裁判理由）
+
+#### 前端 — `/corwork/think-tank` 页面（已完成）
+- [x] 整体架构：4 步 ViewPager（组建团队 → 提出议题 → 并行推演 → 结果产出）
+- [x] 顶部 TopBar：进度条 + 存档按钮（带数量徽章）
+- [x] 第 1 步 `StepTeam`：从 `agentRepo` 读取真实 Agent，卡片勾选，支持设置组织者（金色皇冠标识）
+- [x] 第 2 步 `StepTopic`：议题输入框，支持快捷议题模板
+- [x] 第 3 步 `StepDeduction`：星图（Mesh 网状）可视化主界面
+  - [x] 深色宇宙背景（径向渐变）+ `StarField` 星点闪烁动画
+  - [x] `MeshCanvas`：Canvas 绘制渐变连线 + **实时 token 信息流粒子**（彗星拖尾效果）
+    - 粒子完全脱离 React state，用 `ref` 管理，rAF 循环内直接操作，零 re-render
+    - token 速率越快粒子越多越大（每 10 字符 1 颗，最多 3 颗/次，大小 1.5~3.5px）
+    - 研讨会 Round 2 时粒子定向飞向组织者（汇聚效果）
+    - 组织者总结阶段所有节点向组织者汇聚
+    - 推演阶段隔离：仅 `deductPhase === "running"` 时生成粒子
+  - [x] `MeshNode`：圆形 Agent 节点，颜色加强，发光效果，状态指示点
+  - [x] 组织者节点：金色皇冠 + 脉冲光环（`pulse-ring` 动画）
+  - [x] 节点拖拽：`document` 级 `mousemove`/`mouseup` 监听，支持跨区域拖拽不中断
+  - [x] 节点拖回 Dock：拖到底部 Dock 区域松手自动移除，Dock 红色高亮提示
+  - [x] 底部 `AgentDock`：横向卡片，可收起，点击加入星图，HTML5 drag 拖入星图定位
+  - [x] 对话日志面板：右侧滑出，按轮次分组展示，支持按 Agent 过滤
+  - [x] 组织阶段 UI：左侧面板（组织者信息 + 快速模版 + Prompt 编辑区 + 实时 thinking 流）
+  - [x] 星图有向连线：组织完成后绘制带箭头的有向边，节点显示职位胶囊标签
+  - [x] `NodeDetailPanel`：组织完成后点击节点弹出右侧抽屉，职位/任务 Prompt/汇报对象可编辑
+  - [x] **推演模式切换**：「图推演」vs「研讨会」模式选择按钮
+  - [x] **研讨会对话流 UI**：
+    - 按轮次动态分组（第一轮·初步发言 / 第二轮·深化讨论 / ...）
+    - 每轮结束后展示**组织者裁判决策卡片**（蓝色「继续下一轮」/ 金色「讨论充分，进入总结」+ 一句话理由）
+    - 组织者综合总结金色特殊展示区块（流式输出 + 光标闪烁）
+  - [x] **存档系统**：推演完成自动保存到 `localStorage`（最多 20 条），`SessionListPanel` 历史侧边栏，点击存档跳转结果页
+- [x] 第 4 步 `StepResult`：结果产出页
+  - [x] 图推演模式：所有 Agent 结论卡片网格展示
+  - [x] 研讨会模式：只展示组织者综合总结大卡片 + 参与 Agent 小标签列表
+  - [x] `DeductionResult` 接口：统一携带 `msgs` / `mode` / `organizerSummary`
+
+#### 技术亮点
+- **粒子系统零 re-render**：粒子数据完全用 `useRef` 管理，Canvas rAF 循环直接读写，彻底避免每帧 `setState` 卡死页面
+- **组织者自主裁判**：每轮结束后组织者 Agent 非流式调用判断是否继续，动态决定轮数（最多 5 轮）
+- **pendingDoneRef 模式**：避免在 React setState updater 内调用父组件 setState 的规范解法
+
+---
+
+## 已完成阶段
+
+### Phase 3 — 多 Agent 并行推演 ✅
+
+**完成时间**：2026-06-15
+
+（详见上方 Phase 3 任务清单）
+
+---
+
+### Phase 2-4 — Agent 养成系统 ✅
+
+**完成时间**：2026-06-12
 
 #### 数据模型设计
-- [ ] Agent 数据结构定义（前端 TypeScript 接口 + 后端 Pydantic Schema）
-  - 基础信息（静态）：id / name / avatar / model / system_prompt / permission_level / tools
-  - 能力评价（动态）：strengths / work_style / skill_scores（雷达图维度）/ team_tags
-  - 成长轨迹（静态记录）：created_at / task_count / accuracy
-  - 知识库储备：knowledge_docs（文档链接列表）
-- [ ] Agent 本地持久化（IndexedDB，与会话存储同库）
+- [x] Agent 数据结构定义（前端 TypeScript 接口）
+  - 基础信息（静态）：id / name / iconName / iconColor / model / systemPrompt / permissionLevel / tools
+  - 能力评价（动态）：workStyle / skillScores（六维雷达图）/ tags
+  - 成长轨迹（静态记录）：createdAt / taskCount / accuracy / teamCount / level
+  - 知识库储备：knowledgeDocs（文档链接列表）
+- [x] Agent 本地持久化（IndexedDB v4，agents store）
+- [x] `agent-repository.ts`：CRUD 封装 + `calcLevel()` 等级计算
 
-#### 后端接口
-- [ ] `GET /v1/agents/` — 查询 Agent 列表
-- [ ] `POST /v1/agents/` — 创建 Agent
-- [ ] `PUT /v1/agents/{agent_id}` — 更新 Agent 配置
-- [ ] `DELETE /v1/agents/{agent_id}` — 删除 Agent
-- [ ] Agent 接入聊天：`ChatRequest` 支持传入 `agent_id`，后端用对应 system prompt + 工具配置发起对话
+#### LiveBench 数据接入
+- [x] `livebench_service.py`：内嵌静态 CSV（2026-01-08，124 个模型），50+ 别名映射，7 层模糊匹配
+- [x] `GET /v1/livebench/scores?model=xxx`：返回六维分数（支持模糊匹配）
+- [x] `GET /v1/livebench/models`：返回所有可用模型列表
+- [x] `POST /v1/livebench/refresh`：强制刷新缓存
+- [x] 前端新建 Agent 时，选择模型后自动查询 LiveBench 并预览六维分数
+- [x] 创建 Agent 时将真实 LiveBench 分数写入 skillScores
 
 #### 前端页面 — Agent 养成（`/health/agent`）
-- [ ] Agent 列表视图（卡片式）：展示头像、名称、模型、能力标签
-- [ ] Agent 详情/编辑页：
-  - **基础信息**（静态）：名称、头像、模型选择、Prompt（任务描述）、权限等级、可调用工具
-  - **能力评价**（动态）：能力擅长 + 工作风格标签、技能雷达图（编码/分析/创意/执行/沟通/速度）、所属 Agent 组队
-  - **成长轨迹**（静态记录）：创建时间、完成任务次数、准确度
-  - **知识库储备**：已关联文档列表（链接）、添加文档入口
-- [ ] 新建 Agent 表单（快速创建）
-- [ ] Agent 接入聊天页：顶部模型选择器支持切换到某个 Agent
+- [x] Agent 列表视图（卡片式）：图标 + 名称 + 模型 + 能力标签 + Lv 进度条 + 三项统计
+- [x] Agent 详情面板（右侧滑出）：四 Tab（身份/能力/战绩/知识库）
+- [x] 能力 Tab：SVG 雷达图 + 各维度进度条 + LiveBench 数据来源标注
+- [x] 新建 Agent 表单：图标/颜色选择 + 模型选择 + LiveBench 实时预览 + 工作风格/Prompt/标签/工具
+- [x] 移除 Mock 数据种子，`MOCK_AGENTS` 清空，Agent 数据完全由用户创建
+- [x] Agent 删除：卡片 hover 显示垃圾桶按钮 + `DeleteConfirmDialog` 二次确认
+- [x] Agent 详情面板编辑模式：身份 Tab 点击铅笔图标进入编辑，支持修改名称/角色/工作风格/System Prompt/标签/工具，保存后实时同步 IndexedDB 和卡片列表
 
-#### 前端页面 — 多 Agent 构建（`/corwork/think-tank`）
-- [ ] 从 Agent 库选择参与角色（替换当前硬编码的 4 个角色）
-- [ ] 展示各 Agent 的真实配置信息（模型、擅长方向）
+#### 前端页面 — 聊天接入
+- [x] `ChatToolbar`：`ModelSelector` → `AgentSelector`，从 `agentRepo` 读取真实 Agent 列表
+- [x] System Prompt 注入：`useChatStream.sendMessage` 支持 `systemPrompt?` 参数，自动插入 system 消息
+- [x] 会话关联 Agent：`ConversationRow` 新增 `agentId` / `agentName`（DB v4），创建会话时写入
+- [x] 历史页 AGENT 列：有 `agentName` 显示紫色标签，否则显示旧模型名（向后兼容）
+- [x] Agent 选择持久化：`localStorage` key `cor_last_agent_id`，刷新/重开页面自动恢复
+- [x] 对话持久化：`localStorage` key `cor_last_conv_id`，刷新/重开页面自动恢复上次对话
+- [x] 切换历史对话自动恢复 Agent：`handleConversationChange` 读取 `ConversationRow.agentId`，URL `?id=` 跳转同样生效
+
+#### 延后需求
+- [ ] 对话完成后自动更新 taskCount，等级随之成长（延后至 Phase 4）
 
 ---
 
@@ -218,29 +344,25 @@ Agent 被视为一种**能力实体**，包含静态配置（基础信息）和�
 
 ## 后续规划
 
-### Phase 2-4（当前）— Agent 养成系统
-- Agent 数据模型 + 本地持久化
-- Agent 养成页面（基础信息 / 能力评价 / 成长轨迹 / 知识库）
-- Agent 接入聊天（顶部选择器切换 Agent）
-- 多 Agent 构建页面接入真实 Agent 库
+### Phase 4（当前）— MCP/Skill 建设 & 多模态 Chat（已完成，收尾待做）
+- [x] Skills 看板：后端 CRUD + SQLite 持久化 + 前端仓库风格预览弹窗
+- [x] 多模态 Chat：图片上传 + 粘贴截图 + 三协议格式转换
+- [ ] Skills 看板编辑功能（当前只有新建和删除，缺少编辑已有 Skill 文件的入口）
+- [ ] 文档上传解析（`.pdf/.docx` 读取内容作为 Agent 上下文，当前只存文件名）
+- [ ] 存档系统：支持从历史存档恢复研讨会模式（当前恢复时 mode 固定为 "graph"）
+- [ ] Think Tank 导出报告功能（当前按钮 disabled 占位）
 
-### Phase 3 — 多 Agent 构建（并行推演）
-- 后端并行调用多个 Agent（不同 system prompt）
-- 前端展示各 Agent 推演结果（分栏 / 时间线）
-- 主导者对各 Agent 结论采纳 / 驳回
-
-### Phase 4 — CorWork 协作交流（蜂巢）
+### Phase 5 — CorWork 协作交流（蜂巢）
 - 多 Agent 群聊协作空间（基于 Agent 库）
 - 需求拆解与任务分配流程
 - 实时通信（WebSocket）
 
-### Phase 5 — WorkBench 工作台
+### Phase 6 — WorkBench 工作台进阶
 - 协作进度看板
 - API 用量监控
 - 定时任务配置与管理
-- Skill / MCP 上传与管理
 
-### Phase 6 — 开发者功能 & 实验功能
+### Phase 7 — 开发者功能 & 实验功能
 - 工作流可视化（MCP 积木搭建）
 - 梦境归档系统
 
@@ -259,6 +381,10 @@ Agent 被视为一种**能力实体**，包含静态配置（基础信息）和�
 | 2026-06-11 | Agent 日志存储 | 内存存储（最多 500 条），服务重启清空 | 当前阶段够用，Phase 2-3 接 SQLite 持久化 |
 | 2026-06-12 | 搜索结果压缩策略 | 注入前提炼（规则提取高密度句），而非历史裁剪 | 历史裁剪会破坏 tool_call_id 对应关系导致 API 报错 |
 | 2026-06-12 | 重复搜索打断 | 后端检测连续重复工具调用，注入强制回答 user 消息 | 工具描述约束对弱模型（Flash）无效，工程层兜底更可靠 |
+| 2026-06-15 | Skill 动态注册 | exec 用户 .py 文件 + AST 提取参数 schema，注册到 tool_registry | 无需重启服务，PATCH enabled 时实时注册/注销 |
+| 2026-06-15 | 种子数据同步 | 每次启动按名称 upsert 文件内容，不改元数据（幂等） | 避免重复创建，同时保证代码更新后自动同步到 DB |
+| 2026-06-15 | 多模态消息格式 | 前端统一用 OpenAI vision 格式，后端按 provider 转换为各协议格式 | 前端无需感知协议差异，转换逻辑集中在 chat_service |
+| 2026-06-15 | 粘贴截图方案 | ClipboardEvent.items 过滤 image/*，FileReader 转 base64 | 与文件上传走同一套附件流程，零额外状态管理 |
 
 ---
 
@@ -302,3 +428,39 @@ Agent 被视为一种**能力实体**，包含静态配置（基础信息）和�
 | 2026-06-12 | Phase 2-3 | Phase 2-3 完成，进入 Phase 2-4 Agent 养成系统规划 | - |
 | 2026-06-12 | Phase 2-4 | 侧边栏"协作"分组新增「多 Agent 构建」入口（/corwork/think-tank），占位页面上线 | - |
 | 2026-06-12 | Phase 2-4 | 确定 Agent 数据模型四个维度：基础信息（静态）/ 能力评价（动态）/ 成长轨迹 / 知识库储备 | - |
+| 2026-06-12 | Phase 2-4 | LiveBench 接入：内嵌静态 CSV（124 模型）+ 50+ 别名映射 + 7 层模糊匹配，解决全 50 分问题 | - |
+| 2026-06-12 | Phase 2-4 | Agent 管理页：移除 Mock 种子数据，新增删除功能（hover 垃圾桶 + 二次确认 Dialog） | - |
+| 2026-06-12 | Phase 2-4 | Agent 接入聊天：AgentSelector 替代 ModelSelector，System Prompt 注入，会话关联 agentId/agentName（DB v4） | - |
+| 2026-06-12 | Phase 2-4 | 持久化优化：localStorage 存储上次选中 Agent（cor_last_agent_id）和上次对话（cor_last_conv_id），刷新自动恢复 | - |
+| 2026-06-12 | Phase 2-4 | Agent 详情面板编辑模式：身份 Tab 铅笔按钮进入编辑，支持修改名称/角色/工作风格/Prompt/标签/工具，保存写入 IndexedDB | - |
+| 2026-06-12 | Phase 2-4 | 切换历史对话自动恢复 Agent：handleConversationChange 读取 ConversationRow.agentId，URL ?id= 跳转同样生效 | - |
+| 2026-06-12 | Phase 2-4 | Phase 2-4 全部完成，进入 Phase 3 多 Agent 并行推演规划 | - |
+| 2026-06-14 | Phase 3 | think-tank 页面全量重写：4 步 ViewPager + TopBar 进度条合并，StepTeam/StepTopic/StepResult 占位完成 | - |
+| 2026-06-14 | Phase 3 | StepDeduction 星图主界面：深色宇宙背景 + StarField 星点 + MeshCanvas 渐变连线 + 粒子流动动画 | - |
+| 2026-06-14 | Phase 3 | MeshNode 节点：圆形 + 颜色加强 + 发光效果 + 状态指示点 + 组织者皇冠/脉冲光环 | - |
+| 2026-06-14 | Phase 3 | AgentDock：横向卡片 + 可收起 + HTML5 drag 拖入星图 + 点击加入；对话日志面板右侧滑出 | - |
+| 2026-06-14 | Phase 3 | Bug 修复：initializedRef 防 resize 重置节点；undefined 对话兜底；节点颜色太淡加强 | - |
+| 2026-06-14 | Phase 3 | 节点拖回 Dock：document 级 mousemove/mouseup 监听，跨区域拖拽不中断，Dock 红色高亮提示 | - |
+| 2026-06-14 | Phase 3 | 组织阶段实现：后端 organize_service.py + /v1/organize SSE 接口 + /v1/organize/templates 模版接口 | - |
+| 2026-06-14 | Phase 3 | 组织阶段前端：左侧面板（组织者信息 + 快速模版 + Prompt 编辑区）+ 实时 thinking 流 + 组织完成状态机 | - |
+| 2026-06-14 | Phase 3 | 星图有向连线：组织完成后 MeshCanvas 绘制带箭头+label 的有向边，节点显示职位胶囊标签 | - |
+| 2026-06-14 | Phase 3 | NodeDetailPanel：组织完成后点击节点弹出右侧抽屉，显示职位/任务 Prompt/汇报对象，支持编辑保存 | - |
+| 2026-06-14 | Phase 3 | API Key 自动匹配：删除 UI 选择器，按组织者模型名精确匹配 → isActive → 第一个 key 的优先级自动选取 | - |
+| 2026-06-14 | Phase 3 | Bug 修复：Docker 容器未重建导致 404（需 build + force-recreate）；AsyncOpenAI 不支持 .stream() 改为 create(stream=True) | - |
+| 2026-06-15 | Phase 3 | 存档系统：SessionRecord 数据结构 + SessionListPanel 历史侧边栏 + TopBar 存档按钮（带数量徽章）+ 推演完成自动保存 | - |
+| 2026-06-15 | Phase 3 | 研讨会模式（Discussion Mode）：discussion_service.py 三阶段流程 + POST /v1/discussion SSE 接口 | - |
+| 2026-06-15 | Phase 3 | 研讨会前端：deductMode 切换按钮 + 对话流按轮次分组展示 + 组织者总结金色特殊区块 | - |
+| 2026-06-15 | Phase 3 | Bug 修复：React key 重复（改为 agentId-round 组合 key）；StepResult 研讨会模式只展示组织者总结 | - |
+| 2026-06-15 | Phase 3 | 数据流重构：onDeductDone 回调改为 DeductionResult（含 msgs/mode/organizerSummary），ThinkTankPage state 类型更新 | - |
+| 2026-06-15 | Phase 3 | 实时 token 信息流粒子：粒子完全脱离 React state 用 ref 管理，token 速率驱动粒子密度/大小，彗星拖尾效果 | - |
+| 2026-06-15 | Phase 3 | 粒子系统性能修复：移除 setParticles rAF 循环（每帧 setState 卡死页面），改为 Canvas rAF 直接操作 ref，零 re-render | - |
+| 2026-06-15 | Phase 3 | 粒子阶段隔离：仅 deductPhase==="running" 时生成粒子，组织阶段不产生粒子 | - |
+| 2026-06-15 | Phase 3 | 组织者自主裁判：每轮结束后组织者 Agent 判断是否继续（JSON decision），动态轮数（最多 5 轮） | - |
+| 2026-06-15 | Phase 3 | 裁判决策 UI：每轮消息列表下方展示组织者决策卡片（蓝色继续/金色结束 + 一句话理由） | - |
+| 2026-06-15 | Phase 3 | 多轮通用化：Round N（N>2）消息初始化改为通用逻辑，不再硬编码 Round 2，轮次标签动态化 | - |
+| 2026-06-15 | Phase 4 | Skills 后端：skill_store.py（SQLite 两表 CRUD）+ skills.py 路由（CRUD + 文件上传）+ skill_runner.py（动态注册工具） | - |
+| 2026-06-15 | Phase 4 | Skills 种子数据：_BUILTIN_SKILLS 含完整真实代码（search.py 150 行），seed_builtin_skills() 幂等同步，启动时自动执行 | - |
+| 2026-06-15 | Phase 4 | Skills 前端看板：SkillCard + CompositionBar（GitHub 风格构成进度条）+ PreviewModal（仓库文件树风格）+ CreateSkillModal | - |
+| 2026-06-15 | Phase 4 | 多模态 Schema：TextPart / ImageUrlPart Pydantic 模型，MessageContent 支持 str | list，chat_service 三协议格式转换 | - |
+| 2026-06-15 | Phase 4 | 多模态前端：use-chat-stream buildUserContent() 转 OpenAI vision 格式，chat/page.tsx 传 attachments，MessageList 渲染缩略图 | - |
+| 2026-06-15 | Phase 4 | 粘贴截图：chat-input.tsx handlePaste 处理器，ClipboardEvent 过滤 image/*，FileReader 转 base64，挂载到 textarea onPaste | - |

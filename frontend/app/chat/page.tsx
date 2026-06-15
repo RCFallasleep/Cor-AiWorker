@@ -5,13 +5,14 @@ import { useSearchParams } from "next/navigation";
 import { ChatToolbar } from "@/components/chat/chat-toolbar";
 import { MessageList } from "@/components/chat/message-list";
 import { ChatInput } from "@/components/chat/chat-input";
-import { useChatStream, type AgentEvent } from "@/lib/hooks/use-chat-stream";
+import { useChatStream, type AgentEvent, type Attachment } from "@/lib/hooks/use-chat-stream";
 import { useAvailableModels } from "@/lib/hooks/use-available-models";
 import { useClientContext } from "@/lib/hooks/use-client-context";
 import { conversationRepo } from "@/lib/repositories/conversation-repository";
+import { agentRepo } from "@/lib/repositories/agent-repository";
 import { type ChatMessage, type AgentStep } from "@/lib/mock-chat-data";
 import type { AvailableModel } from "@/lib/hooks/use-available-models";
-import type { ConversationRow } from "@/lib/db/idb";
+import type { AgentRow, ConversationRow } from "@/lib/db/idb";
 
 /** 后端地址（与 useChatStream 保持一致） */
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? "";
@@ -59,11 +60,15 @@ function nowTimestamp() {
   return `${d.getHours().toString().padStart(2, "0")}:${d.getMinutes().toString().padStart(2, "0")}`;
 }
 
+const LAST_AGENT_KEY = "cor_last_agent_id";
+const LAST_CONV_KEY  = "cor_last_conv_id";
+
 function ChatPageInner() {
   const searchParams = useSearchParams();
   const urlConvId = searchParams.get("id");
 
-  const [modelId, setModelId] = useState<string>("");
+  // 当前选中的 Agent（null 表示未选择）
+  const [currentAgent, setCurrentAgent] = useState<AgentRow | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
 
@@ -72,10 +77,39 @@ function ChatPageInner() {
   const conversationIdRef = useRef<string | null>(null);
   const urlLoadedRef = useRef(false);
 
+  // 从 API Key 列表中，根据 Agent 绑定的模型名找到对应的 AvailableModel
   const { models, loading: modelsLoading } = useAvailableModels();
-  const effectiveModelId = modelId || models[0]?.id || "";
-  const currentModel = models.find((m) => m.id === effectiveModelId);
+  const currentModel: AvailableModel | undefined = currentAgent
+    ? (models.find((m) => m.label === currentAgent.model || m.apiName === currentAgent.model) ?? models[0])
+    : undefined;
   const supportsVision = currentModel?.supportsVision ?? false;
+
+  // 初始化时恢复上次选择的 Agent
+  useEffect(() => {
+    const savedId = localStorage.getItem(LAST_AGENT_KEY);
+    if (!savedId) return;
+    agentRepo.get(savedId).then((agent) => {
+      if (agent) setCurrentAgent(agent);
+    });
+  }, []);
+
+  // 初始化时恢复上次的对话（仅在 URL 没有指定 id 时生效）
+  useEffect(() => {
+    if (urlConvId) return; // URL 已指定对话，优先使用
+    const savedConvId = localStorage.getItem(LAST_CONV_KEY);
+    if (!savedConvId) return;
+    conversationRepo.getMessages(savedConvId).then((rows) => {
+      if (rows.length === 0) {
+        // 对话已被删除或为空，清除记录
+        localStorage.removeItem(LAST_CONV_KEY);
+        return;
+      }
+      setCurrentConvId(savedConvId);
+      conversationIdRef.current = savedConvId;
+      setMessages(rows.map(rowToMessage));
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const { streaming, sendMessage, abort } = useChatStream();
   const clientContext = useClientContext();
@@ -103,9 +137,26 @@ function ChatPageInner() {
     setErrorBanner(null);
     setCurrentConvId(id);
     conversationIdRef.current = id;
+    // 持久化当前对话 id
+    if (id) localStorage.setItem(LAST_CONV_KEY, id);
+    else localStorage.removeItem(LAST_CONV_KEY);
     if (!id) { setMessages([]); return; }
-    const rows = await conversationRepo.getMessages(id);
+
+    // 并行加载消息 + 对话元数据
+    const [rows, conv] = await Promise.all([
+      conversationRepo.getMessages(id),
+      conversationRepo.getConversation(id),
+    ]);
     setMessages(rows.map(rowToMessage));
+
+    // 自动切换到该对话关联的 Agent
+    if (conv?.agentId) {
+      const agent = await agentRepo.get(conv.agentId);
+      if (agent) {
+        setCurrentAgent(agent);
+        localStorage.setItem(LAST_AGENT_KEY, agent.id);
+      }
+    }
   }, [rowToMessage]);
 
   const refreshConversations = useCallback(async () => {
@@ -117,8 +168,17 @@ function ChatPageInner() {
         urlLoadedRef.current = true;
         setCurrentConvId(urlConvId);
         conversationIdRef.current = urlConvId;
+        localStorage.setItem(LAST_CONV_KEY, urlConvId);
         const rows = await conversationRepo.getMessages(urlConvId);
         setMessages(rows.map(rowToMessage));
+        // 自动切换到该对话关联的 Agent
+        if (target.agentId) {
+          const agent = await agentRepo.get(target.agentId);
+          if (agent) {
+            setCurrentAgent(agent);
+            localStorage.setItem(LAST_AGENT_KEY, agent.id);
+          }
+        }
       }
     }
   }, [urlConvId, rowToMessage]);
@@ -137,6 +197,8 @@ function ChatPageInner() {
     currentAiMsgIdRef.current = null;
     thinkingBufRef.current = "";
     agentStepsRef.current = [];
+    // 新对话时清除持久化的对话 id，保留 Agent 选择
+    localStorage.removeItem(LAST_CONV_KEY);
   }, []);
 
   // ── 更新当前 AI 消息的 agentSteps（不可变更新，同步镜像到 ref）──
@@ -156,8 +218,8 @@ function ChatPageInner() {
   );
 
   const handleSend = useCallback(
-    async (content: string) => {
-      if (!content.trim() || streaming || !currentModel) return;
+    async (content: string, attachments: Attachment[] = []) => {
+      if ((!content.trim() && attachments.length === 0) || streaming || !currentModel) return;
       setErrorBanner(null);
       thinkingBufRef.current = "";
 
@@ -166,22 +228,32 @@ function ChatPageInner() {
       const isFirstMessage = !conversationIdRef.current;
       if (isFirstMessage) {
         const conv = await conversationRepo.createConversation({
-          title: content.slice(0, 30) || "新对话",
+          title: content.slice(0, 30) || (attachments.length > 0 ? "图片消息" : "新对话"),
           modelLabel: currentModel.label,
           modelKeyId: currentModel.id,
+          agentId:    currentAgent?.id,
+          agentName:  currentAgent?.name,
         });
         conversationIdRef.current = conv.id;
         setCurrentConvId(conv.id);
+        localStorage.setItem(LAST_CONV_KEY, conv.id);
         window.dispatchEvent(new CustomEvent("conversation-updated"));
       }
       const convId = conversationIdRef.current!;
 
+      // 图片附件的 base64 preview 列表（存入 meta 供渲染）
+      const imagePreviews = attachments
+        .filter((a) => a.type === "image")
+        .map((a) => a.preview);
+
       const savedUserMsg = await conversationRepo.appendMessage({
         conversationId: convId, role: "user", content, timestamp,
+        meta: imagePreviews.length > 0 ? { imagePreviews } : undefined,
       });
 
       const userMsg: ChatMessage = {
         id: savedUserMsg.id, role: "user", content, timestamp, username: "You",
+        meta: imagePreviews.length > 0 ? { imagePreviews } : undefined,
       };
 
       const assistantPlaceholderId = `msg-ai-${Date.now()}`;
@@ -292,12 +364,14 @@ function ChatPageInner() {
         (delta) => {
           thinkingBufRef.current += delta;
         },
-        true,          // agentMode
+        true,                              // agentMode
         clientContext,
-        convId,        // sessionId → 后端日志关联
+        convId,                            // sessionId → 后端日志关联
+        currentAgent?.systemPrompt || undefined,  // Agent system prompt
+        attachments,                       // 图片附件
       );
     },
-    [messages, currentModel, sendMessage, streaming, clientContext, updateAgentSteps]
+    [messages, currentModel, currentAgent, sendMessage, streaming, clientContext, updateAgentSteps]
   );
 
   return (
@@ -315,8 +389,14 @@ function ChatPageInner() {
         conversationId={currentConvId}
         conversations={conversations}
         onConversationChange={handleConversationChange}
-        modelId={effectiveModelId}
-        onModelChange={(id) => { setModelId(id); setErrorBanner(null); }}
+        agentId={currentAgent?.id ?? ""}
+        onAgentChange={(agent) => {
+          setCurrentAgent(agent);
+          setErrorBanner(null);
+          // 持久化选择，下次进入页面自动恢复
+          if (agent) localStorage.setItem(LAST_AGENT_KEY, agent.id);
+          else localStorage.removeItem(LAST_AGENT_KEY);
+        }}
         streaming={streaming}
         onAbort={abort}
         onNewConversation={handleNewConversation}
@@ -368,7 +448,11 @@ function ChatPageInner() {
           <img src="/logo.svg" alt="logo" style={{ width: "56px", height: "56px", opacity: 0.4 }} />
           <p style={{ fontSize: "14px", color: "var(--text-secondary)", margin: 0 }}>开始一段新对话</p>
           <p style={{ fontSize: "12px", margin: 0 }}>
-            {modelsLoading ? "加载模型中..." : currentModel ? `当前模型：${currentModel.label}` : "请前往「设置 → API Key 管理」添加 Key"}
+            {currentAgent
+              ? `${currentAgent.name} · ${currentAgent.model}`
+              : modelsLoading
+                ? "加载中..."
+                : "请选择一个 Agent 开始对话"}
           </p>
         </div>
       )}
@@ -383,12 +467,13 @@ function ChatPageInner() {
       {/* 底部输入框 */}
       <ChatInput
         onSend={handleSend}
-        disabled={streaming || !currentModel}
+        disabled={streaming || !currentAgent || !currentModel}
         supportsVision={supportsVision}
         placeholder={
           streaming ? "AI 正在回复..." :
-          !currentModel ? "请先添加 API Key..." :
-          "Message Assistant (Enter to send)"
+          !currentAgent ? "请先选择一个 Agent..." :
+          !currentModel ? "Agent 绑定的模型未配置 API Key..." :
+          `与 ${currentAgent.name} 对话（Enter 发送）`
         }
       />
     </div>

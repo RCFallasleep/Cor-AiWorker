@@ -7,10 +7,13 @@
  * Store 设计：
  *   conversations  - 会话元信息（标题、模型、时间等）
  *   messages       - 消息记录（按 conversationId 索引）
+ *   agents         - Agent 配置与能力数据
  *
  * 版本历史：
  *   v1 - 初始版本
  *   v2 - MessageRow.meta 新增 agentSteps 字段（Agent 流程图持久化）
+ *   v3 - 新增 agents store（Agent 养成系统）
+ *   v4 - ConversationRow 新增 agentId 字段（关联 Agent）
  */
 
 import { openDB, type DBSchema, type IDBPDatabase } from "idb";
@@ -22,6 +25,8 @@ export interface ConversationRow {
   title: string;        // 第一条用户消息前 30 字，或"新对话"
   modelLabel: string;   // 显示用模型名
   modelKeyId: string;   // ApiKeyRecord.id，便于后续恢复模型选择
+  agentId?: string;     // AgentRow.id，关联的 Agent（可选，无则为纯模型对话）
+  agentName?: string;   // Agent 显示名（冗余存储，避免查表）
   messageCount: number;
   lastPreview: string;  // 最后一条消息的前 40 字（列表预览用）
   createdAt: number;    // timestamp ms
@@ -46,6 +51,40 @@ export interface MessageRow {
   createdAt: number;    // timestamp ms，排序用
 }
 
+// ── Agent 数据结构 ──
+export interface AgentSkillScores {
+  reasoning: number;    // 推理力  (0-100, 对齐 livebench Reasoning)
+  coding: number;       // 代码力  (对齐 livebench Coding)
+  research: number;     // 调研力  (对齐 livebench Data Analysis)
+  writing: number;      // 写作力  (对齐 livebench Language)
+  math: number;         // 数学力  (对齐 livebench Mathematics)
+  execution: number;    // 执行速 (对齐 livebench Agentic Coding)
+}
+
+export interface AgentRow {
+  id: string;
+  name: string;
+  role: string;           // 角色描述，如"深度调研 · 信息聚合专家"
+  workStyle: string;      // 工作风格，如"严谨型"
+  model: string;          // 绑定模型，如"GPT-4o"
+  systemPrompt: string;
+  permissionLevel: number; // 1-5
+  tools: string[];         // 已装载工具名称列表
+  iconName: string;        // lucide 图标名，如"Search"
+  iconColor: string;       // 图标背景色，如"#1e3a5f"
+  tags: string[];          // 能力标签
+  skillScores: AgentSkillScores;
+  // 成长轨迹
+  taskCount: number;
+  accuracy: number;        // 0-100
+  teamCount: number;       // 协作次数
+  level: number;           // 1-20，由 taskCount 计算
+  knowledgeDocs: { name: string; url: string }[];
+  status: "online" | "busy" | "idle";
+  createdAt: number;
+  updatedAt: number;
+}
+
 interface CordSchema extends DBSchema {
   conversations: {
     key: string;
@@ -57,10 +96,15 @@ interface CordSchema extends DBSchema {
     value: MessageRow;
     indexes: { "by-conversationId": string; "by-createdAt": number };
   };
+  agents: {
+    key: string;
+    value: AgentRow;
+    indexes: { "by-updatedAt": number };
+  };
 }
 
 const DB_NAME    = "cor-aiworker";
-const DB_VERSION = 1;
+const DB_VERSION = 4;
 
 let _db: IDBPDatabase<CordSchema> | null = null;
 
@@ -68,7 +112,7 @@ export async function getIdb(): Promise<IDBPDatabase<CordSchema>> {
   if (_db) return _db;
 
   _db = await openDB<CordSchema>(DB_NAME, DB_VERSION, {
-    upgrade(db) {
+    upgrade(db, oldVersion) {
       // conversations store
       if (!db.objectStoreNames.contains("conversations")) {
         const convStore = db.createObjectStore("conversations", { keyPath: "id" });
@@ -81,6 +125,15 @@ export async function getIdb(): Promise<IDBPDatabase<CordSchema>> {
         msgStore.createIndex("by-conversationId", "conversationId");
         msgStore.createIndex("by-createdAt", "createdAt");
       }
+
+      // v3: agents store
+      if (oldVersion < 3 && !db.objectStoreNames.contains("agents")) {
+        const agentStore = db.createObjectStore("agents", { keyPath: "id" });
+        agentStore.createIndex("by-updatedAt", "updatedAt");
+      }
+
+      // v4: ConversationRow 新增 agentId / agentName（无需 schema 变更，IndexedDB 自动兼容）
+      // 仅版本号升级，旧数据 agentId/agentName 为 undefined，视为"纯模型对话"
     },
   });
 

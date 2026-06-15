@@ -101,6 +101,35 @@ export function ChatInput({
     setAttachments((prev) => prev.filter((a) => a.id !== id));
   };
 
+  // 粘贴截图：Cmd+Shift+4 / QQ / 微信截图复制后直接 Ctrl+V / Cmd+V
+  const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    if (!supportsVision) return;
+    const items = Array.from(e.clipboardData.items);
+    const imageItems = items.filter((item) => item.type.startsWith("image/"));
+    if (imageItems.length === 0) return;
+
+    // 有图片时阻止默认粘贴行为（避免粘贴乱码）
+    e.preventDefault();
+    imageItems.forEach((item) => {
+      const file = item.getAsFile();
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const preview = ev.target?.result as string;
+        setAttachments((prev) => [
+          ...prev,
+          {
+            id: `paste-${Date.now()}-${Math.random()}`,
+            name: `截图_${new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}.png`,
+            type: "image",
+            preview,
+          },
+        ]);
+      };
+      reader.readAsDataURL(file);
+    });
+  };
+
   const canSend = (text.trim().length > 0 || attachments.length > 0) && !disabled;
 
   return (
@@ -168,6 +197,7 @@ export function ChatInput({
           value={text}
           onChange={handleTextChange}
           onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
           disabled={disabled}
           placeholder={placeholder}
           rows={1}

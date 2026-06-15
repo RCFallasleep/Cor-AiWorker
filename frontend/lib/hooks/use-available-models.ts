@@ -19,6 +19,7 @@ export interface AvailableModel {
   provider: string;
   supportsVision: boolean;
   baseUrl?: string;
+  extraHeaders?: Record<string, string>;
   keyValue: string;
   // 原始 Key 记录（供 useChatStream 直接使用）
   keyRecord: ApiKeyRecord;
@@ -58,6 +59,7 @@ export function useAvailableModels() {
       provider: k.provider,
       supportsVision: PROVIDER_DEFAULT_VISION[k.provider] ?? false,
       baseUrl: k.baseUrl,
+      extraHeaders: k.extraHeaders,
       keyValue: k.keyValue,
       keyRecord: k,
     }));
