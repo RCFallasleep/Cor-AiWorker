@@ -183,7 +183,7 @@ async def _stream_anthropic(body: ChatRequest) -> AsyncGenerator[str, None]:
     yield _sse({"type": "done", "input_tokens": input_tokens, "output_tokens": output_tokens})
 
 
-# ── Bedrock 原生协议（MaaS 网关 /bedrock_runtime/model/invoke-with-response-stream）──
+# ── Bedrock 原生协议（/bedrock_runtime/model/invoke-with-response-stream）──
 
 def _build_bedrock_messages(body: ChatRequest) -> tuple[list[dict], str | None]:
     """将 ChatRequest.messages 转换为 Bedrock 原生格式（支持多模态）。
@@ -215,11 +215,11 @@ def _build_bedrock_messages(body: ChatRequest) -> tuple[list[dict], str | None]:
 
 async def _stream_bedrock(body: ChatRequest) -> AsyncGenerator[str, None]:
     """
-    调用 MaaS Bedrock 网关（原生 Anthropic Messages 格式，HTTP chunked 流式）。
+    调用 Bedrock 网关（原生 Anthropic Messages 格式，HTTP chunked 流式）。
 
     网关特征：
-    - URL：base_url（完整路径，如 https://maas.xxx/openai/openai/bedrock_runtime/model/invoke-with-response-stream）
-    - 认证：extra_headers 中的 token 或其他自定义 Header
+    - URL：base_url（完整路径，如 https://your-gateway.example.com/bedrock_runtime/model/invoke-with-response-stream）
+    - 认证：extra_headers 中的自定义 Header
     - 请求体：Anthropic Messages API 原生格式（含 anthropic_version、thinking 等）
     - 响应：HTTP chunked，每行一个 JSON 事件（与 Anthropic SSE 事件结构相同）
 
@@ -311,15 +311,15 @@ async def _stream_bedrock(body: ChatRequest) -> AsyncGenerator[str, None]:
     yield _sse({"type": "done", "input_tokens": input_tokens, "output_tokens": output_tokens})
 
 
-# ── Vertex AI Anthropic 协议（MaaS 网关 /google/anthropic/v1:streamRawPredict）──
+# ── Vertex AI Anthropic 协议（/google/anthropic/v1:streamRawPredict）──
 
 async def _stream_vertex(body: ChatRequest) -> AsyncGenerator[str, None]:
     """
-    调用 MaaS Vertex AI Anthropic 网关（标准 SSE 流式）。
+    调用 Vertex AI Anthropic 网关（标准 SSE 流式）。
 
     网关特征：
-    - URL：base_url（完整路径，如 https://maas.xxx/openai/openai/google/anthropic/v1:streamRawPredict）
-    - 认证：extra_headers 中的 token 等自定义 Header
+    - URL：base_url（完整路径，如 https://your-gateway.example.com/google/anthropic/v1:streamRawPredict）
+    - 认证：extra_headers 中的自定义 Header
     - 请求体：Anthropic Messages API 格式，但不含 anthropic_version，不含 model（模型已在 URL 中）
     - 响应：标准 SSE 格式（data: {...}），事件结构与 Anthropic SDK 相同
 

@@ -44,7 +44,7 @@ class ChatRequest(BaseModel):
     model: str = Field(..., description="模型 ID，如 gpt-4o / claude-opus-4-5")
     api_key: str = Field(..., description="API Key，由前端从本地存储读取后传入")
     base_url: str | None = Field(None, description="自定义 Base URL（代理 / 转发地址）")
-    extra_headers: dict[str, str] | None = Field(None, description="额外 HTTP Header，如 MaaS 网关的 x-maas-user-email")
+    extra_headers: dict[str, str] | None = Field(None, description="额外 HTTP Header，用于企业网关自定义认证")
     provider: Literal["openai", "anthropic", "bedrock", "vertex"] | None = Field(
         None,
         description=(

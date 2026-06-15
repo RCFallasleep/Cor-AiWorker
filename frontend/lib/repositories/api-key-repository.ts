@@ -25,7 +25,7 @@ export interface ApiKeyRecord {
   keyValue: string;        // 实际 API Key
   modelName?: string;      // 调用 API 时使用的模型名，如 "deepseek-v4-flash"
   baseUrl?: string;        // 自定义 Base URL（可选）
-  extraHeaders?: Record<string, string>;  // 额外 HTTP Header，如 MaaS 网关需要的 token
+  extraHeaders?: Record<string, string>;  // 额外 HTTP Header，用于企业网关自定义认证
   isActive: boolean;
   createdAt: string;       // ISO string
   updatedAt: string;

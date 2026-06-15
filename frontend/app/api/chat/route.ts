@@ -33,7 +33,7 @@ function resolveProtocol(body: ChatRequestBody): "openai" | "anthropic" | "bedro
   return body.apiKey.trimStart().startsWith("sk-ant-") ? "anthropic" : "openai";
 }
 
-// ── OpenAI 兼容协议（OpenAI / DeepSeek / 自定义代理 / MaaS 等）──
+// ── OpenAI 兼容协议（OpenAI / DeepSeek / 自定义代理等）──
 async function streamOpenAI(body: ChatRequestBody): Promise<Response> {
   const client = new OpenAI({
     apiKey: body.apiKey,
@@ -210,7 +210,7 @@ async function streamBedrock(body: ChatRequestBody): Promise<Response> {
   });
 }
 
-// ── Vertex AI Anthropic 协议（MaaS 网关 /google/anthropic/v1:streamRawPredict）──
+// ── Vertex AI Anthropic 协议（/google/anthropic/v1:streamRawPredict）──
 async function streamVertex(body: ChatRequestBody): Promise<Response> {
   if (!body.baseUrl) {
     return new Response(JSON.stringify({ error: "Vertex AI 协议需要填写 Base URL（含 v1:streamRawPredict）" }), { status: 400 });

@@ -193,7 +193,7 @@ function KeyFormModal({
   const isAnthropic = protocol === "anthropic";
   const isBedrock = protocol === "bedrock";
   const isVertex = protocol === "vertex";
-  // MaaS 网关识别（base_url 含 maas 关键字）
+  // 企业网关识别（base_url 含 maas 关键字）
   const isMaaS = baseUrl.toLowerCase().includes("maas");
 
   /** 将多行文本解析为 Header 对象，忽略格式错误的行 */
@@ -389,7 +389,7 @@ function KeyFormModal({
             }
           />
 
-          {/* MaaS 快速填充提示 */}
+          {/* 企业网关快速填充提示 */}
           {isMaaS && !extraHeadersText && (
             <div style={{
               display: "flex", alignItems: "flex-start", gap: "8px",
@@ -442,7 +442,7 @@ function KeyFormModal({
               }}
             />
             <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>
-              用于 MaaS / 企业网关等需要自定义 Header 认证的场景
+              用于企业网关等需要自定义 Header 认证的场景
             </span>
           </div>
 
