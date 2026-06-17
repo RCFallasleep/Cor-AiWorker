@@ -957,6 +957,30 @@ export default function EditorPage() {
     }
   }, [tabs, activeTabPath, resolveFileHandle]);
 
+  // ── 拒绝时回写磁盘（将 before 内容写回本地文件）──
+  const revertFileToDisk = useCallback(async (filePath: string, content: string) => {
+    try {
+      if (dirHandleRef.current) {
+        // 原生模式：通过 File System Access API 写文件
+        const fileHandle = await resolveFileHandle(filePath);
+        if (fileHandle) {
+          const writable = await fileHandle.createWritable();
+          await writable.write(content);
+          await writable.close();
+        }
+      } else {
+        // 降级：通过后端 HTTP 接口写文件
+        await fetch(`${BACKEND_URL}/v1/workspace/file`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: filePath, content }),
+        });
+      }
+    } catch (e) {
+      console.error("revert file failed", e);
+    }
+  }, [resolveFileHandle]);
+
   // Cmd+S 保存
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -1494,7 +1518,8 @@ export default function EditorPage() {
                     {/* 拒绝此文件 */}
                     <button
                       onClick={() => {
-                        // 拒绝：恢复 before 内容到 tab
+                        // 拒绝：将 before 内容写回磁盘，并恢复 tab
+                        revertFileToDisk(diff.path, diff.before);
                         setTabs((prev) =>
                           prev.map((t) =>
                             t.path === diffViewPath
@@ -1624,7 +1649,8 @@ export default function EditorPage() {
                   {/* 全部拒绝 */}
                   <button
                     onClick={() => {
-                      // 拒绝所有：恢复每个文件的 before 内容
+                      // 拒绝所有：将每个文件的 before 内容写回磁盘，并恢复 tab
+                      pendingDiffs.forEach((d) => revertFileToDisk(d.path, d.before));
                       setTabs((prev) =>
                         prev.map((t) => {
                           const diff = pendingDiffs.find((d) => d.path === t.path);
@@ -1688,6 +1714,8 @@ export default function EditorPage() {
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
+                          // 将 before 内容写回磁盘，并恢复 tab
+                          revertFileToDisk(diff.path, diff.before);
                           setTabs((prev) =>
                             prev.map((t) =>
                               t.path === diff.path
@@ -1699,7 +1727,7 @@ export default function EditorPage() {
                           if (diffViewPath === diff.path) setDiffViewPath(null);
                         }}
                         className="rounded p-0.5 transition-colors hover:bg-[var(--bg-hover)]"
-                        title="拒绝此文件"
+                        title="拒绝此文件（恢复磁盘原文件）"
                       >
                         <Ban size={11} style={{ color: "#ef4444" }} />
                       </button>
