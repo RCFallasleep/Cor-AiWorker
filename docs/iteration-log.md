@@ -8,7 +8,7 @@
 
 ## 当前阶段：Phase 7 — 本地代码编辑 + Agent 文件操作 + 断点调试闭环
 
-**状态**：已完成（Phase A/B/C 全部完成）
+**状态**：已完成（Phase A/B/C 全部完成 + 后续体验优化）
 **开始时间**：2026-06-17
 **最后更新**：2026-06-17
 
@@ -774,3 +774,19 @@
 | 2026-06-17 | Phase 7C | 前端：DebugPanel 组件（可折叠，等待状态脉冲动画，快照展示含变量 Tab/调用栈 Tab，多断点 diff 格式支持，每 5 秒轮询刷新） | - |
 | 2026-06-17 | Phase 7C | 前端：wait_for_breakpoint 工具调用联动（Agent 调用时激活等待状态，完成后关闭并刷新快照），底部状态栏断点指示 | - |
 | 2026-06-17 | Phase 7C | 前端：输入框解除工作区限制（调试场景无需文件树也可与 Agent 对话），System Prompt 补充调试工具说明 | - |
+| 2026-06-17 | Phase 7D | 前端：拖拽文件夹打开工作区（dragenter/dragleave/dragover/drop 四事件，dragCounterRef 计数器解决子元素抖动，优先 File System Access API getAsFileSystemHandle，降级 webkitGetAsEntry） | - |
+| 2026-06-17 | Phase 7D | 前端：系统原生文件夹选择器（showDirectoryPicker，File System Access API），openDirHandle 统一处理拖拽和点击两种入口 | - |
+| 2026-06-17 | Phase 7D | 后端：GET /v1/workspace/locate 接口，扫描 /Users、/home 下常见路径（深度 2 层），按文件夹名搜索返回候选路径列表 | - |
+| 2026-06-17 | Phase 7D | 前端：openDirHandle 调用 locate 接口自动填充完整路径；唯一匹配时零操作自动完成，多候选时弹 banner 让用户确认 | - |
+| 2026-06-17 | Phase 7D | 前端：Agent Diff 视图（MonacoDiffEditor 并排对比，汇总栏显示 +N/-N 行数，逐文件接受/拒绝，全部接受/拒绝，拒绝时 revertFileToDisk 写回磁盘） | - |
+| 2026-06-17 | Phase 7D | 前端：buildSystemPrompt 注入当前断点快照状态（有快照时强制提示调用工具，无快照时说明暂无），修复 Agent 凭记忆回答「没有断点」的问题 | - |
+| 2026-06-17 | Phase 7D | 前端：openDirHandle 和 handleExpandDir 改为递归读取完整目录树（readFullTree），修复文件树只显示一层、子目录显示「空目录」的问题 | - |
+| 2026-06-17 | Phase 7D | 工程：plugins/debuggerPlugin/ 目录新增，将 Android Studio 断点调试插件源码纳入 Cor-AiWorker 仓库统一管理；更新 .gitignore 忽略 build/、.gradle/、.kotlin/ 等编译产物 | - |
+| 2026-06-17 | Phase 7D | 前端：拖拽文件夹打开工作区（dragenter/dragleave/dragover/drop 四事件，dragCounterRef 计数器解决子元素抖动，优先 File System Access API getAsFileSystemHandle，降级 webkitGetAsEntry） | - |
+| 2026-06-17 | Phase 7D | 前端：系统原生文件夹选择器（showDirectoryPicker，File System Access API），openDirHandle 统一处理拖拽和点击两种入口 | - |
+| 2026-06-17 | Phase 7D | 后端：GET /v1/workspace/locate 接口，扫描 /Users、/home 下常见路径（深度 2 层），按文件夹名搜索返回候选路径列表 | - |
+| 2026-06-17 | Phase 7D | 前端：openDirHandle 调用 locate 接口自动填充完整路径；唯一匹配时零操作自动完成，多候选时弹 banner 让用户确认 | - |
+| 2026-06-17 | Phase 7D | 前端：Agent Diff 视图（MonacoDiffEditor 并排对比，汇总栏显示 +N/-N 行数，逐文件接受/拒绝，全部接受/拒绝，拒绝时 revertFileToDisk 写回磁盘） | - |
+| 2026-06-17 | Phase 7D | 前端：buildSystemPrompt 注入当前断点快照状态（有快照时强制提示调用工具，无快照时说明暂无），修复 Agent 凭记忆回答「没有断点」的问题 | - |
+| 2026-06-17 | Phase 7D | 前端：openDirHandle 和 handleExpandDir 改为递归读取完整目录树（readFullTree），修复文件树只显示一层、子目录显示「空目录」的问题 | - |
+| 2026-06-17 | Phase 7D | 工程：plugins/debuggerPlugin/ 目录新增，将 Android Studio 断点调试插件源码纳入 Cor-AiWorker 仓库统一管理；更新 .gitignore 忽略 build/、.gradle/、.kotlin/ 等编译产物 | - |
