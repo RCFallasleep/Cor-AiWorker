@@ -615,6 +615,10 @@ export default function EditorPage() {
   const [isWaitingBreakpoint, setIsWaitingBreakpoint] = useState(false);
   const debugPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // ── File System Access API（原生文件夹选择器）──
+  const dirHandleRef = useRef<FileSystemDirectoryHandle | null>(null);
+  const dirHandleRootRef = useRef<string>("");
+
   const { models, loading: modelsLoading } = useAvailableModels();
   const { streaming, sendMessage, abort } = useChatStream();
 
@@ -685,14 +689,15 @@ export default function EditorPage() {
     }
   }, []);
 
-  const handleOpenWorkspace = useCallback(async () => {
-    if (!workspacePath.trim()) return;
+  const handleOpenWorkspace = useCallback(async (pathOverride?: string) => {
+    const path = (pathOverride ?? workspacePath).trim();
+    if (!path) return;
     setOpeningWorkspace(true);
     try {
       const res = await fetch(`${BACKEND_URL}/v1/workspace/open`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: workspacePath.trim() }),
+        body: JSON.stringify({ path }),
       });
       if (!res.ok) {
         const err = await res.json();
@@ -708,7 +713,104 @@ export default function EditorPage() {
     }
   }, [workspacePath, loadFileTree]);
 
+  // 系统原生文件夹选择器（File System Access API）
+  const handlePickFolder = useCallback(async () => {
+    // 检查浏览器是否支持 showDirectoryPicker
+    if (!("showDirectoryPicker" in window)) {
+      // 降级：提示用户手动输入路径
+      alert("当前浏览器不支持文件夹选择器，请手动输入路径。\n（推荐使用 Chrome / Edge 最新版）");
+      return;
+    }
+    try {
+      // 弹出系统原生文件夹选择对话框
+      const dirHandle = await (window as Window & { showDirectoryPicker: () => Promise<FileSystemDirectoryHandle> }).showDirectoryPicker();
+      const dirName = dirHandle.name;
+
+      // 直接用 File System Access API 在前端构建文件树（不依赖后端路径）
+      setOpeningWorkspace(true);
+
+      // 递归读取目录结构（最多 3 层，避免太慢）
+      async function readDirHandle(
+        handle: FileSystemDirectoryHandle,
+        depth: number,
+        basePath: string
+      ): Promise<FileNode[]> {
+        const nodes: FileNode[] = [];
+        const IGNORE = new Set(["node_modules", ".git", "__pycache__", ".DS_Store", "dist", "build", ".next"]);
+        for await (const [name, entry] of (handle as unknown as AsyncIterable<[string, FileSystemHandle]>)) {
+          if (IGNORE.has(name)) continue;
+          const path = `${basePath}/${name}`;
+          if (entry.kind === "directory" && depth < 4) {
+            const children = await readDirHandle(entry as FileSystemDirectoryHandle, depth + 1, path);
+            nodes.push({ name, path, type: "dir", children });
+          } else if (entry.kind === "file") {
+            nodes.push({ name, path, type: "file" });
+          }
+        }
+        // 目录在前，文件在后，各自按名称排序
+        nodes.sort((a, b) => {
+          if (a.type !== b.type) return a.type === "dir" ? -1 : 1;
+          return a.name.localeCompare(b.name);
+        });
+        return nodes;
+      }
+
+      // 读取文件树
+      const tree = await readDirHandle(dirHandle, 0, dirName);
+
+      // 存储 dirHandle 供后续文件读写使用
+      dirHandleRef.current = dirHandle;
+      dirHandleRootRef.current = dirName;
+
+      // 设置前端状态（不依赖后端路径）
+      setWorkspaceRoot(dirName);
+      setWorkspaceName(dirName);
+      setFileTree(tree);
+      setWorkspacePath(dirName);
+
+      // 同时尝试通知后端（如果后端能找到对应路径则 Agent 工具也能用）
+      // 这里用 dirName 作为路径尝试，后端找不到也没关系（前端已经有文件树了）
+      try {
+        await fetch(`${BACKEND_URL}/v1/workspace/open`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: dirName }),
+        });
+      } catch {
+        // 后端打开失败不影响前端文件树展示
+      }
+
+      setOpeningWorkspace(false);
+    } catch (err: unknown) {
+      // 用户取消选择（AbortError）不报错
+      if (err instanceof Error && err.name !== "AbortError") {
+        console.error("pick folder failed", err);
+      }
+      setOpeningWorkspace(false);
+    }
+  }, []);
+
   // ── 文件操作 ──
+
+  // 通过 File System Access API 根据相对路径找到文件 handle
+  const resolveFileHandle = useCallback(async (relativePath: string): Promise<FileSystemFileHandle | null> => {
+    const handle = dirHandleRef.current;
+    if (!handle) return null;
+    // relativePath 格式：dirName/subdir/file.ts，去掉根目录名前缀
+    const root = dirHandleRootRef.current;
+    const parts = relativePath.startsWith(root + "/")
+      ? relativePath.slice(root.length + 1).split("/")
+      : relativePath.split("/").slice(1); // 兼容其他格式
+    try {
+      let current: FileSystemDirectoryHandle = handle;
+      for (let i = 0; i < parts.length - 1; i++) {
+        current = await current.getDirectoryHandle(parts[i]);
+      }
+      return await current.getFileHandle(parts[parts.length - 1]);
+    } catch {
+      return null;
+    }
+  }, []);
 
   const handleFileClick = useCallback(async (path: string, name: string) => {
     const existing = tabs.find((t) => t.path === path);
@@ -717,15 +819,31 @@ export default function EditorPage() {
       return;
     }
     try {
-      const res = await fetch(
-        `${BACKEND_URL}/v1/workspace/file?path=${encodeURIComponent(path)}`
-      );
-      if (!res.ok) return;
-      const data = await res.json();
+      let content = "";
+
+      // 优先用 File System Access API（原生选择器模式）
+      if (dirHandleRef.current) {
+        const fileHandle = await resolveFileHandle(path);
+        if (fileHandle) {
+          const file = await fileHandle.getFile();
+          content = await file.text();
+        } else {
+          return; // 找不到文件
+        }
+      } else {
+        // 降级：通过后端 HTTP 接口读取
+        const res = await fetch(
+          `${BACKEND_URL}/v1/workspace/file?path=${encodeURIComponent(path)}`
+        );
+        if (!res.ok) return;
+        const data = await res.json();
+        content = data.content;
+      }
+
       const tab: EditorTab = {
         path,
         name,
-        content: data.content,
+        content,
         language: extToLanguage(name),
         modified: false,
       };
@@ -734,7 +852,7 @@ export default function EditorPage() {
     } catch (e) {
       console.error("load file failed", e);
     }
-  }, [tabs]);
+  }, [tabs, resolveFileHandle]);
 
   const handleEditorChange = useCallback((value: string | undefined) => {
     if (!activeTabPath) return;
@@ -750,20 +868,34 @@ export default function EditorPage() {
     if (!tab) return;
     setSaving(true);
     try {
-      const res = await fetch(`${BACKEND_URL}/v1/workspace/file`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: tab.path, content: tab.content }),
-      });
-      if (res.ok) {
-        setTabs((prev) =>
-          prev.map((t) => (t.path === activeTabPath ? { ...t, modified: false } : t))
-        );
+      if (dirHandleRef.current) {
+        // 原生模式：通过 File System Access API 写文件
+        const fileHandle = await resolveFileHandle(tab.path);
+        if (fileHandle) {
+          const writable = await fileHandle.createWritable();
+          await writable.write(tab.content);
+          await writable.close();
+          setTabs((prev) =>
+            prev.map((t) => (t.path === activeTabPath ? { ...t, modified: false } : t))
+          );
+        }
+      } else {
+        // 降级：通过后端 HTTP 接口写文件
+        const res = await fetch(`${BACKEND_URL}/v1/workspace/file`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: tab.path, content: tab.content }),
+        });
+        if (res.ok) {
+          setTabs((prev) =>
+            prev.map((t) => (t.path === activeTabPath ? { ...t, modified: false } : t))
+          );
+        }
       }
     } finally {
       setSaving(false);
     }
-  }, [tabs, activeTabPath]);
+  }, [tabs, activeTabPath, resolveFileHandle]);
 
   // Cmd+S 保存
   useEffect(() => {
@@ -840,7 +972,7 @@ export default function EditorPage() {
       id: m.id,
       role: m.role,
       content: m.content,
-      timestamp: Date.now(),
+      timestamp: String(Date.now()),
     }));
 
     await sendMessage(
@@ -983,14 +1115,32 @@ export default function EditorPage() {
         {/* 打开工作区 */}
         {!workspaceRoot ? (
           <div className="flex flex-col gap-2 p-3">
-            <p className="text-xs" style={{ color: "var(--text-muted)" }}>
-              输入本地目录路径打开工作区
-            </p>
+            {/* 主按钮：点击弹出系统文件夹选择器 */}
+            <button
+              onClick={handlePickFolder}
+              disabled={openingWorkspace}
+              className="flex items-center justify-center gap-2 rounded-lg px-3 py-2.5 text-xs font-medium transition-colors disabled:opacity-50"
+              style={{ background: "var(--accent-primary)", color: "#fff" }}
+            >
+              {openingWorkspace ? (
+                <Loader2 size={13} className="animate-spin" />
+              ) : (
+                <FolderOpen size={13} />
+              )}
+              选择文件夹...
+            </button>
+            {/* 分隔线 */}
+            <div className="flex items-center gap-2">
+              <div className="flex-1 border-t" style={{ borderColor: "var(--border-subtle)" }} />
+              <span className="text-xs" style={{ color: "var(--text-muted)" }}>或输入路径</span>
+              <div className="flex-1 border-t" style={{ borderColor: "var(--border-subtle)" }} />
+            </div>
+            {/* 手动输入路径 */}
             <input
               value={workspacePath}
               onChange={(e) => setWorkspacePath(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && handleOpenWorkspace()}
-              placeholder="~/projects/my-app"
+              placeholder="/Users/me/projects/my-app"
               className="w-full rounded border px-2 py-1.5 text-xs outline-none focus:border-[var(--accent-primary)]"
               style={{
                 background: "var(--bg-primary)",
@@ -998,19 +1148,25 @@ export default function EditorPage() {
                 color: "var(--text-primary)",
               }}
             />
-            <button
-              onClick={handleOpenWorkspace}
-              disabled={openingWorkspace || !workspacePath.trim()}
-              className="flex items-center justify-center gap-1.5 rounded px-2 py-1.5 text-xs font-medium transition-colors disabled:opacity-50"
-              style={{ background: "var(--accent-primary)", color: "#fff" }}
-            >
-              {openingWorkspace ? (
-                <Loader2 size={12} className="animate-spin" />
-              ) : (
-                <FolderOpen size={12} />
-              )}
-              打开
-            </button>
+            {workspacePath.trim() && (
+              <button
+                onClick={() => handleOpenWorkspace()}
+                disabled={openingWorkspace}
+                className="flex items-center justify-center gap-1.5 rounded px-2 py-1.5 text-xs font-medium transition-colors disabled:opacity-50"
+                style={{
+                  background: "var(--bg-hover)",
+                  color: "var(--text-primary)",
+                  border: "1px solid var(--border-subtle)",
+                }}
+              >
+                {openingWorkspace ? (
+                  <Loader2 size={12} className="animate-spin" />
+                ) : (
+                  <ChevronRight size={12} />
+                )}
+                打开此路径
+              </button>
+            )}
           </div>
         ) : (
           <>
@@ -1044,6 +1200,8 @@ export default function EditorPage() {
                   setWorkspaceName(null);
                   setFileTree([]);
                   setWorkspacePath("");
+                  dirHandleRef.current = null;
+                  dirHandleRootRef.current = "";
                 }}
                 className="flex w-full items-center gap-1.5 rounded px-2 py-1 text-xs transition-colors hover:bg-[var(--bg-hover)]"
                 style={{ color: "var(--text-muted)" }}
