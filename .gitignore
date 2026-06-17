@@ -56,3 +56,6 @@ android/.gradle/
 android/build/
 android/local.properties
 android/*.keystore
+
+# ── 本地 Demo 项目（参考实现，不入库）──
+demos/

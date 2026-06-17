@@ -4,7 +4,7 @@ import {
   Users,
   BrainCircuit,
   Puzzle,
-  LayoutDashboard,
+  Code2,
   Moon,
   Sparkles,
   Key,
@@ -47,7 +47,7 @@ export const navGroups: NavGroup[] = [
     label: "工作台",
     items: [
       { label: "Skill / MCP Maker", href: "/workbench/skills", icon: Puzzle },
-      { label: "协作看板", href: "/workbench/board", icon: LayoutDashboard },
+      { label: "代码编辑", href: "/workbench/editor", icon: Code2 },
       { label: "定时任务", href: "/workbench/schedule", icon: Timer },
     ],
   },

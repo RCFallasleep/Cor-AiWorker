@@ -6,7 +6,87 @@
 
 ---
 
-## 当前阶段：Phase 6 — 消息对话与 Agent 转发，Agent 记忆后端化
+## 当前阶段：Phase 7 — 本地代码编辑 + Agent 文件操作 + 断点调试闭环
+
+**状态**：已完成（Phase A/B/C 全部完成）
+**开始时间**：2026-06-17
+**最后更新**：2026-06-17
+
+### 阶段说明
+
+本阶段目标是让 Web 端 Agent 突破浏览器沙箱限制，具备对本地文件系统的无痛读写能力，并与 Android Studio 的调试过程形成完整闭环。
+
+核心思路：后端作为本地文件系统的代理层，Agent 通过 MCP 工具调用后端接口完成文件操作；Android Studio 侧通过已有的 debuggerPlugin 采集断点快照并推送给后端，Agent 可读取快照、设置断点、等待调试结果，形成「编辑 → 运行 → 断点分析 → 修复」的自动化循环。
+
+### 架构决策
+
+| 决策项 | 结论 |
+|--------|------|
+| 文件访问方式 | 后端本地文件服务（B方案），Agent 主动读写，无需用户每次手动授权 |
+| 安全边界 | workspace_root 机制：用户打开文件夹后，所有文件操作限制在该目录内 |
+| IDE 推送方式 | 直接写磁盘（VSCode/AS 文件监听自动刷新）+ debuggerPlugin /recommend 接口（AS 断点推荐） |
+| 断点触发方式 | Agent 调用 set_breakpoint 工具推送断点位置，用户负责在 AS 运行，Agent 通过 wait_for_breakpoint 等待结果 |
+| 页面布局 | /workbench/editor 三栏布局：文件树（左）+ Monaco 编辑器（中）+ Agent 对话区（右），类 Cursor 风格 |
+| 对话与 Chat 分离 | 代码编辑页面独立 Agent 对话区，与 /chat 页面完全分开 |
+
+---
+
+### Phase A：后端文件系统 MCP 工具（进行中）
+
+#### 后端
+- [x] `open_workspace` 接口：`POST /v1/workspace/open`，接收本地路径，验证存在后设为 workspace_root，内存存储
+- [x] `list_dir` MCP 工具：列出目录文件树（递归，限制在 workspace_root 内），注册到 tool_registry
+- [x] `read_file` MCP 工具：读取文件内容（路径校验，支持 start_line/end_line 分段读取），注册到 tool_registry
+- [x] `write_file` MCP 工具：写入/覆盖文件（路径校验，自动创建父目录），注册到 tool_registry
+- [x] `GET /v1/workspace/file` 接口：前端直接读取文件内容（供编辑器加载用）
+- [x] `PUT /v1/workspace/file` 接口：前端直接写入文件（供编辑器手动保存用）
+- [x] `GET /v1/workspace/tree` 接口：前端拉取文件树（供文件树组件渲染用）
+- [x] `workspace_service.py`：workspace_root 安全边界（resolve_path 路径前缀校验），忽略 node_modules/.git 等目录
+
+---
+
+### Phase B：前端代码编辑页面重构（待开始）
+
+#### 前端 — 三栏布局
+- [x] `/workbench/editor` 页面重构为三栏布局（文件树 + Monaco 编辑器 + Agent 对话区）
+- [x] 文件树组件：调用 `GET /v1/workspace/tree`，渲染目录树，点击文件加载到编辑器，目录可折叠
+- [x] 「打开文件夹」入口：用户输入本地路径，POST 到后端设置 workspace_root，成功后渲染文件树
+- [x] Monaco 编辑器：加载选中文件内容，手动保存（Cmd+S）调用 `PUT /v1/workspace/file`，Tab 栏未保存 ● 标记
+- [x] Agent 对话区：复用 `use-chat-stream`，模型选择器，工具调用卡片（图标+文件名+状态+可展开结果）
+- [x] write_file 后编辑器自动刷新：Agent 调用 write_file 工具后，前端自动重新加载对应文件内容
+- [x] 快捷提示按钮：根据当前打开文件动态生成（分析/优化/列出文件）
+- [x] tool_names 白名单：只给文件工具 + 调试工具，不暴露协作工具
+
+---
+
+### Phase C：断点调试闭环（已完成）
+
+#### 后端
+- [x] `debug_bridge` 接口：`POST /v1/debug/snapshot`，接收 debuggerPlugin 推送的断点快照，内存缓存最近 20 条（`deque(maxlen=20)`）
+- [x] `GET /v1/debug/snapshot/latest`：返回最新断点快照（供 Agent 工具轮询）
+- [x] `GET /v1/debug/snapshot/list`：返回最近 N 条快照列表
+- [x] `POST /v1/debug/recommend`：向 AS 插件（18766端口）转发断点推荐
+- [x] `get_debug_snapshot` MCP 工具：格式化输出最新断点快照（兼容单断点/多断点 diff 两种格式），支持 index 参数
+- [x] `set_breakpoint` MCP 工具：直接 POST 到 `localhost:18766/recommend`，推送断点推荐给 AS 插件
+- [x] `wait_for_breakpoint` MCP 工具：轮询等待新快照（每 2 秒检查，最多 180 秒），超时返回提示
+- [x] `get_snapshots_deque()` / `get_snapshot_event()`：供 MCP 工具直接访问快照缓存（避免 HTTP 内部调用）
+
+#### 前端
+- [x] `DebugPanel` 组件：右侧 Agent 对话区底部专用断点面板，可折叠
+  - 标题栏：Bug 图标 + 「等待命中」动画徽章 / 「已命中」红色徽章 + 刷新按钮
+  - 等待状态：脉冲圆环动画 + 「等待断点命中...」提示
+  - 快照展示：位置信息（文件:行号 + 类名.方法名）+ 时间戳（X秒前）
+  - 变量 Tab：变量名/类型/值三列，支持子变量缩进展示（最多 5 层）
+  - 调用栈 Tab：帧序号 + 类名.方法名 + 行号，当前帧红色高亮
+  - 多断点 diff 格式：断点 ID + 位置 + keyVars 标签 + 变化量（黄色 △ 标记）
+- [x] 断点状态轮询：启动时拉取一次，之后每 5 秒轮询 `GET /v1/debug/snapshot/latest`
+- [x] `wait_for_breakpoint` 工具调用联动：Agent 调用时激活等待状态，完成后关闭并刷新快照
+- [x] 底部状态栏断点指示：等待中显示「等待断点...」黄色动画，已命中显示「断点已命中」红色圆点
+- [x] 输入框解除工作区限制：即使未打开工作区也可与 Agent 对话（调试场景不需要文件树）
+
+---
+
+## Phase 6（进行中）— 消息对话与 Agent 转发，Agent 记忆后端化
 
 **状态**：进行中（6-1a/6-1b/6-1c 核心功能已完成，「公共记忆」管理入口延后）
 **开始时间**：2026-06-17
@@ -681,3 +761,16 @@
 | 2026-06-17 | Phase 6-1c | 前端：use-enabled-skill-tools.ts Hook，从后端拉取已启用 Skill，排除 collab 类型，返回工具名白名单 | - |
 | 2026-06-17 | Phase 6-1c | 前端：Chat 页面发请求时传 tool_names（只包含 Skill 中心启用的普通工具，协作工具不暴露给普通 Chat） | - |
 | 2026-06-17 | Phase 6-1c | 前端：Skill 看板新增 collab 类型支持（绿色主题 + Users 图标 + 「协作」徽章 + 不可删除） | - |
+| 2026-06-17 | Phase 7A | 后端：workspace_service.py（workspace_root 安全边界，resolve_path 路径前缀校验，build_file_tree 忽略 node_modules/.git/__pycache__，最多 500 文件） | - |
+| 2026-06-17 | Phase 7A | 后端：file_tools.py（list_dir/read_file/write_file 三个 MCP 工具，注册到 tool_registry，read_file 支持 start_line/end_line 分段读取，超 200KB 提示分段） | - |
+| 2026-06-17 | Phase 7A | 后端：api/v1/workspace.py（POST /v1/workspace/open + GET /v1/workspace/info + GET /v1/workspace/tree + GET /v1/workspace/file + PUT /v1/workspace/file） | - |
+| 2026-06-17 | Phase 7B | 前端：/workbench/editor 页面完整重写为三栏布局（文件树 w-52 + Monaco 编辑器 flex-1 + Agent 对话区 w-80），类 Cursor 风格 | - |
+| 2026-06-17 | Phase 7B | 前端：FileTreeNode 递归组件（目录可折叠，depth<2 默认展开，点击文件加载到编辑器，激活文件高亮） | - |
+| 2026-06-17 | Phase 7B | 前端：Monaco 编辑器（vs-dark 主题，JetBrains Mono 字体，Tab 栏未保存 ● 标记，Cmd+S 保存，15 种语言自动识别） | - |
+| 2026-06-17 | Phase 7B | 前端：Agent 对话区（模型选择器，工具调用卡片 ToolCallCard，write_file 完成后自动刷新编辑器，快捷提示按钮） | - |
+| 2026-06-17 | Phase 7B | 前端：tool_names 白名单（list_dir/read_file/write_file/web_search/get_debug_snapshot/set_breakpoint/wait_for_breakpoint），不暴露协作工具 | - |
+| 2026-06-17 | Phase 7C | 后端：api/v1/debug_bridge.py（POST /v1/debug/snapshot 接收快照，deque(maxlen=20) 缓存，GET /v1/debug/snapshot/latest，POST /v1/debug/recommend 转发给 AS 18766 端口） | - |
+| 2026-06-17 | Phase 7C | 后端：tools/debug_tools.py（get_debug_snapshot/set_breakpoint/wait_for_breakpoint 三个 MCP 工具，兼容单断点/多断点 diff 两种快照格式） | - |
+| 2026-06-17 | Phase 7C | 前端：DebugPanel 组件（可折叠，等待状态脉冲动画，快照展示含变量 Tab/调用栈 Tab，多断点 diff 格式支持，每 5 秒轮询刷新） | - |
+| 2026-06-17 | Phase 7C | 前端：wait_for_breakpoint 工具调用联动（Agent 调用时激活等待状态，完成后关闭并刷新快照），底部状态栏断点指示 | - |
+| 2026-06-17 | Phase 7C | 前端：输入框解除工作区限制（调试场景无需文件树也可与 Agent 对话），System Prompt 补充调试工具说明 | - |
