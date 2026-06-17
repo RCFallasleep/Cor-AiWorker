@@ -30,6 +30,8 @@ services:
     volumes:
       # 持久化 SQLite 日志数据库
       - ./data:/data
+      # 本地文件系统挂载请在 docker-compose.override.yml 中配置（不入库）
+      # 示例见 docker-compose.override.yml.example
     depends_on:
       - searxng
     restart: unless-stopped

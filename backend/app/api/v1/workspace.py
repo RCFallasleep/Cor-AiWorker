@@ -4,6 +4,7 @@ workspace.py — 本地工作区 API
 提供前端操作本地文件系统的 HTTP 接口：
   POST /v1/workspace/open      打开工作区（设置 workspace_root）
   GET  /v1/workspace/info      获取当前工作区信息
+  GET  /v1/workspace/locate    按文件夹名在本机常见路径下搜索，返回候选完整路径
   GET  /v1/workspace/tree      获取文件树（供前端文件树组件渲染）
   GET  /v1/workspace/file      读取文件内容（供编辑器加载）
   PUT  /v1/workspace/file      写入文件内容（供编辑器手动保存）
@@ -11,6 +12,7 @@ workspace.py — 本地工作区 API
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
@@ -58,6 +60,78 @@ class FileWriteResponse(BaseModel):
 
 
 # ── 接口实现 ──────────────────────────────────────────────────────────────────
+
+@router.get("/locate")
+async def locate_workspace(name: str = Query(..., description="文件夹名称")):
+    """
+    在本机常见目录下搜索与 name 匹配的文件夹，返回候选完整路径列表。
+    前端用于在 File System Access API 只能拿到文件夹名时，自动推断完整路径。
+    """
+    home = Path.home()
+
+    # 收集所有候选搜索根（容器内 home 可能是 /root，需额外扫描挂载的宿主机目录）
+    search_roots: list[Path] = []
+
+    # 1. 容器自身 home 及其常见子目录
+    for sub in ["", "projects", "Projects", "workspace", "Workspace",
+                "dev", "Dev", "code", "Code", "repos", "Repos", "src",
+                "Documents", "Desktop"]:
+        p = home / sub if sub else home
+        search_roots.append(p)
+
+    # 2. 挂载的宿主机 /Users（macOS）或 /home（Linux）下的所有用户目录
+    for users_root in [Path("/Users"), Path("/home")]:
+        if users_root.is_dir():
+            try:
+                for user_dir in users_root.iterdir():
+                    if not user_dir.is_dir():
+                        continue
+                    for sub in ["", "projects", "Projects", "workspace", "Workspace",
+                                "dev", "Dev", "code", "Code", "repos", "Repos", "src",
+                                "Documents", "Desktop"]:
+                        p = user_dir / sub if sub else user_dir
+                        search_roots.append(p)
+            except PermissionError:
+                pass
+
+    # 3. 其他常见系统路径
+    search_roots += [Path("/opt"), Path("/srv")]
+
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    for root in search_roots:
+        if not root.is_dir():
+            continue
+        # 直接子目录匹配（深度 1）
+        try:
+            direct = root / name
+            if direct.is_dir():
+                s = str(direct)
+                if s not in seen:
+                    seen.add(s)
+                    candidates.append(s)
+        except PermissionError:
+            continue
+        # 再搜一层（深度 2），避免太慢只搜一层
+        try:
+            for sub in root.iterdir():
+                if not sub.is_dir():
+                    continue
+                try:
+                    candidate = sub / name
+                    if candidate.is_dir():
+                        s = str(candidate)
+                        if s not in seen:
+                            seen.add(s)
+                            candidates.append(s)
+                except PermissionError:
+                    continue
+        except PermissionError:
+            continue
+
+    return {"name": name, "candidates": candidates}
+
 
 @router.post("/open", response_model=OpenWorkspaceResponse)
 async def open_workspace(body: OpenWorkspaceRequest):

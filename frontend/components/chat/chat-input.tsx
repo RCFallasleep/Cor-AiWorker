@@ -47,9 +47,10 @@ export function ChatInput({
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
 
-  const textareaRef  = useRef<HTMLTextAreaElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const docInputRef  = useRef<HTMLInputElement>(null);
+  const textareaRef   = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef  = useRef<HTMLInputElement>(null);
+  const docInputRef   = useRef<HTMLInputElement>(null);
+  const isComposing   = useRef(false);   // IME 组合输入中（拼音未上屏）
 
   // 高度随内容动态增长
   useEffect(() => {
@@ -66,7 +67,8 @@ export function ChatInput({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey) {
+    // isComposing=true 时说明拼音还未上屏（IME 组合输入中），不触发发送
+    if (e.key === "Enter" && !e.shiftKey && !isComposing.current) {
       e.preventDefault();
       handleSend();
     }
@@ -275,6 +277,8 @@ export function ChatInput({
           value={text}
           onChange={handleTextChange}
           onKeyDown={handleKeyDown}
+          onCompositionStart={() => { isComposing.current = true; }}
+          onCompositionEnd={() => { isComposing.current = false; }}
           onPaste={handlePaste}
           disabled={disabled}
           placeholder={placeholder}

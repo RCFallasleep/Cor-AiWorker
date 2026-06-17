@@ -538,6 +538,82 @@ _BUILTIN_SKILLS: list[dict] = [
             },
         ],
     },
+    {
+        "name": "FileTools",
+        "description": "工作区文件操作工具集：list_dir（列出目录结构）、read_file（读取文件内容，支持行范围）、write_file（完整覆盖写入文件）。Editor Agent 的核心工具。",
+        "skill_type": "builtin",
+        "tags": ["file", "workspace", "read", "write"],
+        "files": [
+            {
+                "filename": "README.md",
+                "content": (
+                    "# FileTools Skill\n\n"
+                    "工作区文件操作工具集，为 Editor Agent 提供本地文件读写能力。\n\n"
+                    "## 工具列表\n\n"
+                    "### list_dir(path)\n"
+                    "列出指定目录的文件和子目录结构（最多 3 层）。\n\n"
+                    "### read_file(path, start_line?, end_line?)\n"
+                    "读取工作区文件内容，支持按行范围读取大文件。\n\n"
+                    "| 参数 | 类型 | 必填 | 说明 |\n"
+                    "|------|------|------|------|\n"
+                    "| `path` | string | ✓ | 相对于工作区根目录的文件路径 |\n"
+                    "| `start_line` | integer | ✗ | 起始行号（从 1 开始） |\n"
+                    "| `end_line` | integer | ✗ | 结束行号（含） |\n\n"
+                    "### write_file(path, content)\n"
+                    "完整覆盖写入文件内容。写之前建议先用 read_file 读取原内容。\n\n"
+                    "| 参数 | 类型 | 必填 | 说明 |\n"
+                    "|------|------|------|------|\n"
+                    "| `path` | string | ✓ | 相对于工作区根目录的文件路径 |\n"
+                    "| `content` | string | ✓ | 要写入的完整文件内容 |\n\n"
+                    "## 配置\n\n"
+                    "需要先通过 `/v1/workspace/open` 接口打开工作区，工具才能访问文件。\n"
+                ),
+            },
+            {
+                "filename": "file_tools.py",
+                "content": _read_tool_source("file_tools.py"),
+            },
+        ],
+    },
+    {
+        "name": "DebugTools",
+        "description": "Android Studio 断点调试工具集：get_debug_snapshot（获取当前断点快照）、set_breakpoint（推送断点建议）、wait_for_breakpoint（等待新断点命中）。",
+        "skill_type": "builtin",
+        "tags": ["debug", "android", "breakpoint", "snapshot"],
+        "files": [
+            {
+                "filename": "README.md",
+                "content": (
+                    "# DebugTools Skill\n\n"
+                    "Android Studio 断点调试辅助工具集，让 Agent 能感知和分析断点状态。\n\n"
+                    "## 工具列表\n\n"
+                    "### get_debug_snapshot()\n"
+                    "获取 Android Studio 最新断点快照，包含变量值、调用栈等信息。\n\n"
+                    "### set_breakpoint(file, line, condition?)\n"
+                    "向 Android Studio 推送断点建议（需要 AS 插件配合）。\n\n"
+                    "| 参数 | 类型 | 必填 | 说明 |\n"
+                    "|------|------|------|------|\n"
+                    "| `file` | string | ✓ | 源文件路径（相对路径） |\n"
+                    "| `line` | integer | ✓ | 断点行号 |\n"
+                    "| `condition` | string | ✗ | 条件表达式（可选） |\n\n"
+                    "### wait_for_breakpoint(timeout_seconds?)\n"
+                    "阻塞等待新断点命中，超时后返回。\n\n"
+                    "| 参数 | 类型 | 必填 | 说明 |\n"
+                    "|------|------|------|------|\n"
+                    "| `timeout_seconds` | integer | ✗ | 等待超时秒数，默认 60 |\n\n"
+                    "## 使用流程\n\n"
+                    "1. 在 Android Studio 中安装配套插件\n"
+                    "2. 运行 App，触发断点\n"
+                    "3. Agent 调用 `get_debug_snapshot` 获取快照\n"
+                    "4. Agent 分析变量状态，给出调试建议\n"
+                ),
+            },
+            {
+                "filename": "debug_tools.py",
+                "content": _read_tool_source("debug_tools.py"),
+            },
+        ],
+    },
 ]
 
 

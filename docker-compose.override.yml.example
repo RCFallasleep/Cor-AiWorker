@@ -1,0 +1,17 @@
+# docker-compose.override.yml.example
+# 复制此文件为 docker-compose.override.yml，按你的系统修改后使用。
+# override 文件会被 docker compose 自动合并，无需额外参数。
+#
+# 作用：把本地文件系统挂载到后端容器，让 Agent 文件工具可以访问本地项目。
+
+services:
+  backend:
+    volumes:
+      # ── macOS ──────────────────────────────────────────────────────────────
+      - /Users:/Users
+
+      # ── Linux ──────────────────────────────────────────────────────────────
+      # - /home:/home
+
+      # ── 只挂载特定项目（更安全，推荐）──────────────────────────────────────
+      # - /Users/yourname/projects:/Users/yourname/projects

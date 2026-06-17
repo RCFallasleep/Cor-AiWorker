@@ -3,7 +3,7 @@ debug_tools.py — 断点调试 MCP 工具
 
 注册三个工具到全局 tool_registry：
   - get_debug_snapshot   获取最新断点快照（变量/调用栈）
-  - set_breakpoint       向 Android Studio 推送断点推荐
+  - set_breakpoint       将断点推荐写入队列，插件轮询取走后在 AS 自动打断点
   - wait_for_breakpoint  等待新断点命中（用户负责在 AS 运行，Agent 等待结果）
 """
 from __future__ import annotations
@@ -12,8 +12,6 @@ import asyncio
 import json
 import logging
 import time
-
-import httpx
 
 from app.tools.registry import ToolDefinition, tool_registry
 
@@ -28,8 +26,9 @@ def _get_event():
     from app.api.v1.debug_bridge import get_snapshot_event
     return get_snapshot_event()
 
-_LOBI_CALLBACK_URL = "http://localhost:18766/recommend"
-_BACKEND_RECOMMEND_URL = "http://localhost:8000/v1/debug/recommend"
+def _get_recommend_queue():
+    from app.api.v1.debug_bridge import _recommend_queue
+    return _recommend_queue
 
 
 # ── get_debug_snapshot ────────────────────────────────────────────────────────
@@ -124,37 +123,24 @@ tool_registry.register(ToolDefinition(
 
 async def _set_breakpoint_handler(file: str, line: int, reason: str = "") -> str:
     """
-    向 Android Studio 推送断点推荐。
-    插件的 LobiCallbackServer 会接收并在 AS 中自动打断点。
-    用户需要在 AS 中运行项目才能命中断点。
+    将断点推荐写入后端队列。
+    插件通过长轮询 GET /v1/debug/recommend/poll 取走推荐，并在 AS 中自动打断点。
     """
-    payload = {
-        "recommendations": [
-            {"file": file, "line": line, "reason": reason or f"Agent 建议在此处打断点"}
-        ]
-    }
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.post(_LOBI_CALLBACK_URL, json=payload)
-            if resp.is_success:
-                return (
-                    f"✅ 已向 Android Studio 推送断点推荐：{file}:{line}\n"
-                    f"原因：{reason or '（未指定）'}\n\n"
-                    f"请在 Android Studio 中运行项目，等待断点命中后使用 wait_for_breakpoint 工具获取结果。"
-                )
-            else:
-                return f"⚠️ AS 插件返回错误：HTTP {resp.status_code}，请检查插件是否正常运行。"
-    except httpx.ConnectError:
-        return (
-            "⚠️ 无法连接到 Android Studio 插件（18766端口无响应）。\n"
-            "请确认：\n"
-            "1. Android Studio 已打开项目\n"
-            "2. debuggerPlugin 已安装并启用\n"
-            "3. 插件的 LobiCallbackServer 已启动（查看 AS 日志中的 [AIDebugger] 输出）"
-        )
-    except Exception as e:
-        logger.error("set_breakpoint failed | error=%s", e)
-        return f"[错误] 推送断点失败：{e}"
+    import time as _time
+    queue = _get_recommend_queue()
+    queue.append({
+        "file": file,
+        "line": line,
+        "reason": reason or "Agent 建议在此处打断点",
+        "queued_at": _time.time(),
+    })
+    logger.info("set_breakpoint enqueued | file=%s line=%d", file, line)
+    return (
+        f"✅ 断点推荐已入队：{file}:{line}\n"
+        f"原因：{reason or '（未指定）'}\n\n"
+        f"插件将在下次轮询时（约 1-2 秒内）自动在 Android Studio 中打上断点。\n"
+        f"请在 Android Studio 中运行项目，等待断点命中后使用 wait_for_breakpoint 工具获取结果。"
+    )
 
 
 tool_registry.register(ToolDefinition(

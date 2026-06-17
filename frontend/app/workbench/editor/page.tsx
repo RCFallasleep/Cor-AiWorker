@@ -60,7 +60,8 @@ interface FileNode {
   name: string;
   path: string;
   type: "file" | "dir";
-  children?: FileNode[];
+  // null = 目录但尚未加载子项；undefined = 文件节点（无子项）；[] = 已加载但为空目录
+  children?: FileNode[] | null;
 }
 
 interface EditorTab {
@@ -191,39 +192,72 @@ function FileTreeNode({
   depth,
   activeFile,
   onFileClick,
+  onExpandDir,
 }: {
   node: FileNode;
   depth: number;
   activeFile: string | null;
   onFileClick: (path: string, name: string) => void;
+  // 展开目录时回调，由父级负责加载子项并更新 fileTree
+  onExpandDir: (path: string) => Promise<void>;
 }) {
-  const [open, setOpen] = useState(depth < 2);
+  const [open, setOpen] = useState(depth < 1);
+  const [loading, setLoading] = useState(false);
   const isActive = node.type === "file" && node.path === activeFile;
+
+  const handleToggle = async () => {
+    if (node.type !== "dir") return;
+    const willOpen = !open;
+    setOpen(willOpen);
+    // 首次展开且子项尚未加载（children === null）时，触发懒加载
+    if (willOpen && node.children === null) {
+      setLoading(true);
+      try {
+        await onExpandDir(node.path);
+      } finally {
+        setLoading(false);
+      }
+    }
+  };
 
   if (node.type === "dir") {
     return (
       <div>
         <button
-          onClick={() => setOpen((v) => !v)}
+          onClick={handleToggle}
           className="flex w-full items-center gap-1 rounded px-2 py-0.5 text-xs transition-colors hover:bg-[var(--bg-hover)]"
           style={{
             paddingLeft: `${8 + depth * 12}px`,
             color: "var(--text-secondary)",
           }}
         >
-          {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
-          <Folder size={12} style={{ color: "#e8a838" }} />
+          {loading
+            ? <Loader2 size={11} className="animate-spin" style={{ flexShrink: 0 }} />
+            : open
+              ? <ChevronDown size={11} style={{ flexShrink: 0 }} />
+              : <ChevronRight size={11} style={{ flexShrink: 0 }} />
+          }
+          <Folder size={12} style={{ color: "#e8a838", flexShrink: 0 }} />
           <span className="truncate">{node.name}</span>
         </button>
-        {open && node.children?.map((child) => (
+        {open && Array.isArray(node.children) && node.children.map((child) => (
           <FileTreeNode
             key={child.path}
             node={child}
             depth={depth + 1}
             activeFile={activeFile}
             onFileClick={onFileClick}
+            onExpandDir={onExpandDir}
           />
         ))}
+        {open && Array.isArray(node.children) && node.children.length === 0 && (
+          <p
+            className="text-xs"
+            style={{ paddingLeft: `${8 + (depth + 1) * 12}px`, color: "var(--text-muted)" }}
+          >
+            空目录
+          </p>
+        )}
       </div>
     );
   }
@@ -672,6 +706,9 @@ export default function EditorPage() {
   // write_file 调用前的文件内容快照（path -> before content）
   const writeFileBeforeRef = useRef<Map<string, string>>(new Map());
 
+  // ── Token 用量 ──
+  const [tokenUsage, setTokenUsage] = useState<{ input: number; output: number } | null>(null);
+
   // ── Diff 视图状态 ──
   const [pendingDiffs, setPendingDiffs] = useState<PendingDiff[]>([]);
   const [diffViewPath, setDiffViewPath] = useState<string | null>(null); // 当前查看 diff 的文件路径
@@ -688,6 +725,10 @@ export default function EditorPage() {
   // 原生模式下，等待用户确认完整路径（用于通知后端）
   const [pendingFullPath, setPendingFullPath] = useState<string | null>(null);
 
+  // ── 拖拽状态 ──
+  const [isDraggingOver, setIsDraggingOver] = useState(false);
+  const dragCounterRef = useRef(0); // 用计数器避免子元素 dragenter/dragleave 抖动
+
   const { models, loading: modelsLoading } = useAvailableModels();
   const { streaming, sendMessage, abort } = useChatStream();
 
@@ -703,6 +744,10 @@ export default function EditorPage() {
     chatBottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [chatMessages]);
 
+  // ── localStorage 存档 key ──
+  const lsTabsKey = workspaceRoot ? `editor_tabs_${workspaceRoot}` : null;
+  const lsChatKey = workspaceRoot ? `editor_chat_${workspaceRoot}` : null;
+
   // 启动时检查是否已有工作区
   useEffect(() => {
     fetch(`${BACKEND_URL}/v1/workspace/info`)
@@ -717,6 +762,48 @@ export default function EditorPage() {
       .catch(() => {});
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // 工作区切换时，从 localStorage 恢复 tabs 和 chatMessages
+  useEffect(() => {
+    if (!workspaceRoot) return;
+    const tabsKey = `editor_tabs_${workspaceRoot}`;
+    const chatKey = `editor_chat_${workspaceRoot}`;
+    try {
+      const savedTabs = localStorage.getItem(tabsKey);
+      if (savedTabs) {
+        const parsed: EditorTab[] = JSON.parse(savedTabs);
+        setTabs(parsed.map((t) => ({ ...t, modified: false })));
+        if (parsed.length > 0) setActiveTabPath(parsed[parsed.length - 1].path);
+      }
+    } catch { /* 忽略解析错误 */ }
+    try {
+      const savedChat = localStorage.getItem(chatKey);
+      if (savedChat) {
+        const parsed: ChatMessage[] = JSON.parse(savedChat);
+        setChatMessages(parsed);
+      }
+    } catch { /* 忽略解析错误 */ }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspaceRoot]);
+
+  // tabs 变化时自动存档
+  useEffect(() => {
+    if (!lsTabsKey || tabs.length === 0) return;
+    try {
+      // 只存 path/name/language，不存 content（避免 localStorage 超限）
+      const toSave = tabs.map(({ path, name, language }) => ({ path, name, language, content: "", modified: false }));
+      localStorage.setItem(lsTabsKey, JSON.stringify(toSave));
+    } catch { /* 忽略存储错误 */ }
+  }, [tabs, lsTabsKey]);
+
+  // chatMessages 变化时自动存档（只存最近 50 条）
+  useEffect(() => {
+    if (!lsChatKey || chatMessages.length === 0) return;
+    try {
+      const toSave = chatMessages.slice(-50);
+      localStorage.setItem(lsChatKey, JSON.stringify(toSave));
+    } catch { /* 忽略存储错误 */ }
+  }, [chatMessages, lsChatKey]);
 
   // ── 断点快照轮询 ──────────────────────────────────────────────────────────
 
@@ -782,41 +869,219 @@ export default function EditorPage() {
     }
   }, [workspacePath, loadFileTree]);
 
+  // ── 通用：将 FileSystemDirectoryHandle 加载为工作区 ──
+  const openDirHandle = useCallback(async (dirHandle: FileSystemDirectoryHandle) => {
+    const dirName = dirHandle.name;
+    setOpeningWorkspace(true);
+
+    const IGNORE = new Set(["node_modules", ".git", "__pycache__", ".DS_Store", "dist", "build", ".next"]);
+
+    // 递归读取完整目录树（打开时一次性扫描完毕）
+    async function readFullTree(
+      handle: FileSystemDirectoryHandle,
+      basePath: string
+    ): Promise<FileNode[]> {
+      const nodes: FileNode[] = [];
+      for await (const [name, entry] of (handle as unknown as AsyncIterable<[string, FileSystemHandle]>)) {
+        if (IGNORE.has(name)) continue;
+        const path = `${basePath}/${name}`;
+        if (entry.kind === "directory") {
+          const children = await readFullTree(entry as FileSystemDirectoryHandle, path);
+          nodes.push({ name, path, type: "dir", children });
+        } else if (entry.kind === "file") {
+          nodes.push({ name, path, type: "file" });
+        }
+      }
+      nodes.sort((a, b) => {
+        if (a.type !== b.type) return a.type === "dir" ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      });
+      return nodes;
+    }
+
+    const tree = await readFullTree(dirHandle, dirName);
+
+    dirHandleRef.current = dirHandle;
+    dirHandleRootRef.current = dirName;
+
+    setWorkspaceRoot(dirName);
+    setWorkspaceName(dirName);
+    setFileTree(tree);
+    setWorkspacePath(dirName);
+    setOpeningWorkspace(false);
+
+    // 调用后端 locate 接口，在本机常见路径下搜索完整路径，自动填充
+    try {
+      const res = await fetch(`${BACKEND_URL}/v1/workspace/locate?name=${encodeURIComponent(dirName)}`);
+      if (res.ok) {
+        const data = await res.json();
+        const candidates: string[] = data.candidates ?? [];
+        if (candidates.length === 1) {
+          // 唯一匹配：直接自动确认，无需用户操作
+          await fetch(`${BACKEND_URL}/v1/workspace/open`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ path: candidates[0] }),
+          }).then(async (r) => {
+            if (r.ok) {
+              const d = await r.json();
+              setWorkspaceRoot(d.root);
+              setWorkspaceName(d.name);
+            }
+          });
+          // 不弹 banner，直接完成
+          return;
+        }
+        // 多个候选或无匹配：填充最佳猜测，让用户在 banner 中确认
+        const bestGuess = candidates[0] ?? `${dirName}`;
+        setPendingFullPath(bestGuess);
+        return;
+      }
+    } catch {
+      // 后端不可达时降级
+    }
+    // 降级：显示 banner 让用户手动确认
+    setPendingFullPath(dirName);
+  }, []);
+
   // 系统原生文件夹选择器（File System Access API）
   const handlePickFolder = useCallback(async () => {
-    // 检查浏览器是否支持 showDirectoryPicker
     if (!("showDirectoryPicker" in window)) {
-      // 降级：提示用户手动输入路径
       alert("当前浏览器不支持文件夹选择器，请手动输入路径。\n（推荐使用 Chrome / Edge 最新版）");
       return;
     }
     try {
-      // 弹出系统原生文件夹选择对话框
       const dirHandle = await (window as Window & { showDirectoryPicker: () => Promise<FileSystemDirectoryHandle> }).showDirectoryPicker();
-      const dirName = dirHandle.name;
+      await openDirHandle(dirHandle);
+    } catch (err: unknown) {
+      if (err instanceof Error && err.name !== "AbortError") {
+        console.error("pick folder failed", err);
+      }
+      setOpeningWorkspace(false);
+    }
+  }, [openDirHandle]);
 
-      // 直接用 File System Access API 在前端构建文件树（不依赖后端路径）
-      setOpeningWorkspace(true);
+  // ── 拖拽处理 ──
 
-      // 递归读取目录结构（最多 3 层，避免太慢）
-      async function readDirHandle(
+  const handleDragEnter = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current += 1;
+    if (dragCounterRef.current === 1) setIsDraggingOver(true);
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current -= 1;
+    if (dragCounterRef.current === 0) setIsDraggingOver(false);
+  }, []);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    // 告诉浏览器这是一个「复制」操作（显示绿色 + 图标）
+    e.dataTransfer.dropEffect = "copy";
+  }, []);
+
+  const handleDrop = useCallback(async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current = 0;
+    setIsDraggingOver(false);
+
+    const items = Array.from(e.dataTransfer.items);
+
+    // 优先尝试 File System Access API（Chrome 86+）
+    for (const item of items) {
+      if (item.kind === "file") {
+        try {
+          // getAsFileSystemHandle 是 Chrome 的扩展 API
+          const handle = await (item as DataTransferItem & {
+            getAsFileSystemHandle?: () => Promise<FileSystemHandle>;
+          }).getAsFileSystemHandle?.();
+          if (handle && handle.kind === "directory") {
+            await openDirHandle(handle as FileSystemDirectoryHandle);
+            return;
+          }
+          // 如果拖入的是文件（非目录），提示用户
+          if (handle && handle.kind === "file") {
+            alert("请拖入文件夹，而不是单个文件。");
+            return;
+          }
+        } catch {
+          // getAsFileSystemHandle 不支持时降级
+        }
+
+        // 降级：通过 webkitGetAsEntry 判断类型
+        const entry = item.webkitGetAsEntry?.();
+        if (entry) {
+          if (!entry.isDirectory) {
+            alert("请拖入文件夹，而不是单个文件。");
+            return;
+          }
+          // 无法直接获取 FileSystemDirectoryHandle，提示用户手动输入路径
+          const guessedPath = (entry as FileSystemEntry & { fullPath?: string }).fullPath ?? `/${entry.name}`;
+          const confirmed = window.confirm(
+            `检测到文件夹「${entry.name}」\n\n由于浏览器安全限制，无法直接读取完整路径。\n请在下方输入框中确认完整路径后点击「打开此路径」。\n\n猜测路径：${guessedPath}`
+          );
+          if (confirmed) {
+            setWorkspacePath(guessedPath);
+          }
+          return;
+        }
+      }
+    }
+  }, [openDirHandle]);
+
+  // ── 文件树懒加载 ──
+
+  // 通过 File System Access API 根据相对路径找到目录 handle
+  const resolveDirHandle = useCallback(async (relativePath: string): Promise<FileSystemDirectoryHandle | null> => {
+    const handle = dirHandleRef.current;
+    if (!handle) return null;
+    const root = dirHandleRootRef.current;
+    const parts = relativePath.startsWith(root + "/")
+      ? relativePath.slice(root.length + 1).split("/")
+      : relativePath.split("/").slice(1);
+    if (parts.length === 0 || (parts.length === 1 && parts[0] === "")) return handle;
+    try {
+      let current: FileSystemDirectoryHandle = handle;
+      for (const part of parts) {
+        current = await current.getDirectoryHandle(part);
+      }
+      return current;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  // 展开目录时读取其子项（原生模式递归读取，后端模式读一层）
+  const handleExpandDir = useCallback(async (dirPath: string) => {
+    const IGNORE = new Set(["node_modules", ".git", "__pycache__", ".DS_Store", "dist", "build", ".next"]);
+
+    let children: FileNode[];
+
+    if (dirHandleRef.current) {
+      // 原生模式：通过 File System Access API 递归读取完整子树
+      const dirHandle = await resolveDirHandle(dirPath);
+      if (!dirHandle) return;
+
+      async function readFullTree(
         handle: FileSystemDirectoryHandle,
-        depth: number,
         basePath: string
       ): Promise<FileNode[]> {
         const nodes: FileNode[] = [];
-        const IGNORE = new Set(["node_modules", ".git", "__pycache__", ".DS_Store", "dist", "build", ".next"]);
         for await (const [name, entry] of (handle as unknown as AsyncIterable<[string, FileSystemHandle]>)) {
           if (IGNORE.has(name)) continue;
           const path = `${basePath}/${name}`;
-          if (entry.kind === "directory" && depth < 4) {
-            const children = await readDirHandle(entry as FileSystemDirectoryHandle, depth + 1, path);
-            nodes.push({ name, path, type: "dir", children });
-          } else if (entry.kind === "file") {
+          if (entry.kind === "directory") {
+            const subChildren = await readFullTree(entry as FileSystemDirectoryHandle, path);
+            nodes.push({ name, path, type: "dir", children: subChildren });
+          } else {
             nodes.push({ name, path, type: "file" });
           }
         }
-        // 目录在前，文件在后，各自按名称排序
         nodes.sort((a, b) => {
           if (a.type !== b.type) return a.type === "dir" ? -1 : 1;
           return a.name.localeCompare(b.name);
@@ -824,31 +1089,34 @@ export default function EditorPage() {
         return nodes;
       }
 
-      // 读取文件树
-      const tree = await readDirHandle(dirHandle, 0, dirName);
-
-      // 存储 dirHandle 供后续文件读写使用
-      dirHandleRef.current = dirHandle;
-      dirHandleRootRef.current = dirName;
-
-      // 设置前端状态（不依赖后端路径）
-      setWorkspaceRoot(dirName);
-      setWorkspaceName(dirName);
-      setFileTree(tree);
-      setWorkspacePath(dirName);
-      setOpeningWorkspace(false);
-
-      // 通知后端设置工作区路径，让 Agent MCP 工具也能访问文件
-      // File System Access API 只给文件夹名，需要用户在 banner 里确认完整路径
-      setPendingFullPath(`/Users/${dirName}`);
-    } catch (err: unknown) {
-      // 用户取消选择（AbortError）不报错
-      if (err instanceof Error && err.name !== "AbortError") {
-        console.error("pick folder failed", err);
+      children = await readFullTree(dirHandle, dirPath);
+    } else {
+      // 降级：通过后端 HTTP 接口读取（后端返回一层结构）
+      try {
+        const res = await fetch(`${BACKEND_URL}/v1/workspace/tree?path=${encodeURIComponent(dirPath)}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        // 后端返回的节点，目录 children 设为 null（待懒加载）
+        children = (data.tree ?? []).map((n: FileNode) =>
+          n.type === "dir" ? { ...n, children: null } : n
+        );
+      } catch {
+        return;
       }
-      setOpeningWorkspace(false);
     }
-  }, []);
+
+    // 递归更新 fileTree 中对应路径节点的 children
+    function updateTree(nodes: FileNode[]): FileNode[] {
+      return nodes.map((n) => {
+        if (n.path === dirPath) return { ...n, children };
+        if (n.type === "dir" && Array.isArray(n.children)) {
+          return { ...n, children: updateTree(n.children) };
+        }
+        return n;
+      });
+    }
+    setFileTree((prev) => updateTree(prev));
+  }, [resolveDirHandle]);
 
   // ── 文件操作 ──
 
@@ -1019,12 +1287,13 @@ export default function EditorPage() {
       "- 需要修改文件时，必须立即调用 write_file 工具，不要说「让我修改」或「以下是修改后的代码」。",
       "- 不允许只输出代码块而不调用工具。所有文件操作必须通过工具完成。",
       "- write_file 会完整覆盖文件，写之前必须先用 read_file 读取原文件内容。",
+      "- 每次用户询问断点/变量状态时，必须立即调用 get_debug_snapshot 工具获取最新数据，不得基于历史记忆或对话上下文回答。",
       "",
       "可用工具：",
       "- list_dir(path)：列出目录结构",
       "- read_file(path, start_line?, end_line?)：读取文件内容",
       "- write_file(path, content)：写入文件（完整覆盖）",
-      "- get_debug_snapshot()：获取 Android Studio 断点快照",
+      "- get_debug_snapshot()：获取 Android Studio 断点快照（每次询问断点状态都必须调用）",
       "- set_breakpoint(file, line, condition?)：推送断点推荐",
       "- wait_for_breakpoint(timeout_seconds?)：等待新断点命中",
     ];
@@ -1035,8 +1304,23 @@ export default function EditorPage() {
     if (activeTab) {
       parts.push(`当前打开的文件：${activeTab.path}`);
     }
+    // 注入当前断点快照状态，让 Agent 知道是否有快照可以获取
+    if (debugSnapshot) {
+      const loc = debugSnapshot.snapshot
+        ? `${debugSnapshot.snapshot.file}:${debugSnapshot.snapshot.line}`
+        : debugSnapshot.breakpoints?.length
+          ? debugSnapshot.breakpoints.map((b) => b.location).join(", ")
+          : "未知位置";
+      parts.push(
+        `\n【当前调试状态】断点已命中！后端有最新快照可供获取。` +
+        `命中位置：${loc}。` +
+        `请立即调用 get_debug_snapshot 工具获取完整变量信息，不得凭记忆回答。`
+      );
+    } else {
+      parts.push("\n【当前调试状态】暂无断点快照（Android Studio 尚未命中断点，或快照已过期）。");
+    }
     return parts.join("\n");
-  }, [workspaceRoot, activeTab]);
+  }, [workspaceRoot, activeTab, debugSnapshot]);
 
   const handleSend = useCallback(async () => {
     const text = inputText.trim();
@@ -1085,8 +1369,11 @@ export default function EditorPage() {
         );
       },
       // onDone
-      () => {
+      (inputTokens: number, outputTokens: number) => {
         setIsWaitingBreakpoint(false);
+        if (inputTokens > 0 || outputTokens > 0) {
+          setTokenUsage({ input: inputTokens, output: outputTokens });
+        }
       },
       // onError
       (err) => {
@@ -1220,7 +1507,7 @@ export default function EditorPage() {
     );
   }, [
     inputText, selectedModel, streaming, chatMessages,
-    sendMessage, buildSystemPrompt, activeTabPath, fetchDebugSnapshot,
+    sendMessage, buildSystemPrompt, activeTabPath, fetchDebugSnapshot, debugSnapshot,
   ]);
 
   // textarea 自动扩展高度
@@ -1237,9 +1524,33 @@ export default function EditorPage() {
 
   return (
     <div
-      className="flex h-full overflow-hidden"
+      className="flex h-full overflow-hidden relative"
       style={{ background: "var(--bg-primary)" }}
+      onDragEnter={handleDragEnter}
+      onDragLeave={handleDragLeave}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
     >
+      {/* ── 拖拽遮罩 ── */}
+      {isDraggingOver && (
+        <div
+          className="absolute inset-0 z-50 flex flex-col items-center justify-center gap-4 pointer-events-none"
+          style={{
+            background: "rgba(0,0,0,0.55)",
+            backdropFilter: "blur(4px)",
+            border: "2px dashed var(--accent-primary)",
+            borderRadius: "8px",
+          }}
+        >
+          <FolderOpen size={48} style={{ color: "var(--accent-primary)" }} />
+          <p className="text-base font-semibold" style={{ color: "#fff" }}>
+            松开以打开文件夹
+          </p>
+          <p className="text-xs" style={{ color: "rgba(255,255,255,0.6)" }}>
+            支持从 Finder / 资源管理器直接拖入
+          </p>
+        </div>
+      )}
       {/* ══ 左栏：文件树 ══════════════════════════════════════════════════════ */}
       <div
         className="flex w-52 flex-shrink-0 flex-col border-r"
@@ -1398,6 +1709,7 @@ export default function EditorPage() {
                     depth={0}
                     activeFile={activeTabPath}
                     onFileClick={handleFileClick}
+                    onExpandDir={handleExpandDir}
                   />
                 ))
               )}
@@ -1413,6 +1725,13 @@ export default function EditorPage() {
                   setPendingFullPath(null);
                   dirHandleRef.current = null;
                   dirHandleRootRef.current = "";
+                  // 清空编辑器和对话状态
+                  setTabs([]);
+                  setActiveTabPath(null);
+                  setChatMessages([]);
+                  setTokenUsage(null);
+                  setPendingDiffs([]);
+                  setDiffViewPath(null);
                 }}
                 className="flex w-full items-center gap-1.5 rounded px-2 py-1 text-xs transition-colors hover:bg-[var(--bg-hover)]"
                 style={{ color: "var(--text-muted)" }}
@@ -1765,6 +2084,19 @@ export default function EditorPage() {
           ) : (
             <span>{workspaceRoot ?? "未打开工作区"}</span>
           )}
+          {/* Token 用量 */}
+          {tokenUsage && (
+            <span
+              className="flex items-center gap-1 font-mono"
+              style={{ color: "var(--text-muted)" }}
+              title={`本次对话 Token 用量：输入 ${tokenUsage.input.toLocaleString()}，输出 ${tokenUsage.output.toLocaleString()}`}
+            >
+              <span style={{ color: "var(--text-muted)", opacity: 0.6 }}>↑</span>
+              {tokenUsage.input.toLocaleString()}
+              <span style={{ color: "var(--text-muted)", opacity: 0.6 }}>↓</span>
+              {tokenUsage.output.toLocaleString()}
+            </span>
+          )}
           {/* 断点状态指示 */}
           {isWaitingBreakpoint && (
             <span className="ml-auto flex items-center gap-1" style={{ color: "#f59e0b" }}>
@@ -1773,7 +2105,10 @@ export default function EditorPage() {
             </span>
           )}
           {debugSnapshot && !isWaitingBreakpoint && (
-            <span className="ml-auto flex items-center gap-1" style={{ color: "#ef4444" }}>
+            <span
+              className={`flex items-center gap-1${tokenUsage ? "" : " ml-auto"}`}
+              style={{ color: "#ef4444" }}
+            >
               <Circle size={7} className="fill-current" />
               断点已命中
             </span>
