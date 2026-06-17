@@ -25,6 +25,9 @@ import {
   Variable,
   Layers,
   Clock,
+  GitCompare,
+  Check,
+  Ban,
 } from "lucide-react";
 import { useAvailableModels } from "@/lib/hooks/use-available-models";
 import { useChatStream, type AgentEvent } from "@/lib/hooks/use-chat-stream";
@@ -38,6 +41,16 @@ const MonacoEditor = dynamic(() => import("@monaco-editor/react"), {
     </div>
   ),
 });
+
+// Monaco DiffEditor 动态加载
+const MonacoDiffEditor = dynamic(
+  () => import("@monaco-editor/react").then((m) => m.DiffEditor),
+  { ssr: false, loading: () => (
+    <div className="flex h-full items-center justify-center">
+      <Loader2 size={20} className="animate-spin" style={{ color: "var(--text-muted)" }} />
+    </div>
+  )}
+);
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:8000";
 
@@ -113,6 +126,18 @@ interface DebugSnapshot {
   callStackDiff?: string;
 }
 
+// ── Pending Diff（Agent 写文件后待确认的变更）──────────────────────────────────
+
+interface PendingDiff {
+  path: string;          // 文件相对路径
+  name: string;          // 文件名
+  language: string;      // 语言
+  before: string;        // 修改前内容
+  after: string;         // 修改后内容
+  addedLines: number;    // 新增行数
+  removedLines: number;  // 删除行数
+}
+
 // ── 工具函数 ──────────────────────────────────────────────────────────────────
 
 function extToLanguage(filename: string): string {
@@ -139,6 +164,17 @@ function getToolIcon(name: string) {
   if (name === "wait_for_breakpoint") return "⏳";
   if (name === "get_debug_snapshot") return "🐛";
   return "🔧";
+}
+
+function calcDiffLines(before: string, after: string): { added: number; removed: number } {
+  const beforeLines = before.split("\n");
+  const afterLines = after.split("\n");
+  // 简单计算：新增行 = after 中不在 before 里的行，删除行 = before 中不在 after 里的行
+  const beforeSet = new Set(beforeLines);
+  const afterSet = new Set(afterLines);
+  const added = afterLines.filter((l) => !beforeSet.has(l)).length;
+  const removed = beforeLines.filter((l) => !afterSet.has(l)).length;
+  return { added, removed };
 }
 
 function timeAgo(ts: number): string {
@@ -223,10 +259,19 @@ function ToolCallCard({ call }: { call: ToolCallRecord }) {
       ? `${call.args.file}:${call.args.line}`
       : "";
 
+  const isWrite = call.name === "write_file";
+
   return (
     <div
-      className="my-1 rounded-lg border text-xs"
-      style={{ borderColor: "var(--border-subtle)", background: "var(--bg-secondary)" }}
+      className="my-1 rounded-lg border text-xs overflow-hidden"
+      style={{
+        borderColor: call.status === "running" && isWrite
+          ? "var(--accent-primary)"
+          : "var(--border-subtle)",
+        background: "var(--bg-secondary)",
+        boxShadow: call.status === "running" && isWrite
+          ? "0 0 0 1px var(--accent-primary)" : undefined,
+      }}
     >
       <button
         onClick={() => setExpanded((v) => !v)}
@@ -241,14 +286,28 @@ function ToolCallCard({ call }: { call: ToolCallRecord }) {
             {subtitle}
           </span>
         )}
-        <span className="ml-auto flex-shrink-0">
+        <span className="ml-auto flex-shrink-0 flex items-center gap-1.5">
           {call.status === "running" && (
-            <Loader2 size={12} className="animate-spin" style={{ color: "var(--accent-primary)" }} />
+            <>
+              {isWrite && (
+                <span style={{ color: "var(--accent-primary)", fontSize: "10px" }}>写入中</span>
+              )}
+              <Loader2 size={12} className="animate-spin" style={{ color: "var(--accent-primary)" }} />
+            </>
           )}
           {call.status === "done" && <CheckCircle2 size={12} style={{ color: "#10b981" }} />}
           {call.status === "error" && <AlertCircle size={12} style={{ color: "#ef4444" }} />}
         </span>
       </button>
+      {/* write_file running 时显示进度条 */}
+      {call.status === "running" && isWrite && (
+        <div className="h-0.5 w-full overflow-hidden" style={{ background: "var(--bg-hover)" }}>
+          <div
+            className="h-full animate-pulse"
+            style={{ background: "var(--accent-primary)", width: "60%" }}
+          />
+        </div>
+      )}
       {expanded && call.result && (
         <div
           className="border-t px-3 py-2 font-mono text-xs"
@@ -609,6 +668,14 @@ export default function EditorPage() {
   const chatBottomRef = useRef<HTMLDivElement>(null);
   const pendingToolCallsRef = useRef<Map<string, ToolCallRecord>>(new Map());
   const currentAssistantIdRef = useRef<string | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // write_file 调用前的文件内容快照（path -> before content）
+  const writeFileBeforeRef = useRef<Map<string, string>>(new Map());
+
+  // ── Diff 视图状态 ──
+  const [pendingDiffs, setPendingDiffs] = useState<PendingDiff[]>([]);
+  const [diffViewPath, setDiffViewPath] = useState<string | null>(null); // 当前查看 diff 的文件路径
+  const [diffBarExpanded, setDiffBarExpanded] = useState(false); // 汇总栏文件列表展开
 
   // ── 断点调试状态 ──
   const [debugSnapshot, setDebugSnapshot] = useState<DebugSnapshot | null>(null);
@@ -618,6 +685,8 @@ export default function EditorPage() {
   // ── File System Access API（原生文件夹选择器）──
   const dirHandleRef = useRef<FileSystemDirectoryHandle | null>(null);
   const dirHandleRootRef = useRef<string>("");
+  // 原生模式下，等待用户确认完整路径（用于通知后端）
+  const [pendingFullPath, setPendingFullPath] = useState<string | null>(null);
 
   const { models, loading: modelsLoading } = useAvailableModels();
   const { streaming, sendMessage, abort } = useChatStream();
@@ -767,20 +836,11 @@ export default function EditorPage() {
       setWorkspaceName(dirName);
       setFileTree(tree);
       setWorkspacePath(dirName);
-
-      // 同时尝试通知后端（如果后端能找到对应路径则 Agent 工具也能用）
-      // 这里用 dirName 作为路径尝试，后端找不到也没关系（前端已经有文件树了）
-      try {
-        await fetch(`${BACKEND_URL}/v1/workspace/open`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ path: dirName }),
-        });
-      } catch {
-        // 后端打开失败不影响前端文件树展示
-      }
-
       setOpeningWorkspace(false);
+
+      // 通知后端设置工作区路径，让 Agent MCP 工具也能访问文件
+      // File System Access API 只给文件夹名，需要用户在 banner 里确认完整路径
+      setPendingFullPath(`/Users/${dirName}`);
     } catch (err: unknown) {
       // 用户取消选择（AbortError）不报错
       if (err instanceof Error && err.name !== "AbortError") {
@@ -929,16 +989,24 @@ export default function EditorPage() {
   const buildSystemPrompt = useCallback(() => {
     const parts = [
       "你是一个代码助手，可以直接读写用户本地工作区的文件，也可以辅助 Android 断点调试。",
-      "你拥有以下工具：",
-      "- list_dir：列出工作区目录结构",
-      "- read_file：读取文件内容（支持 start_line/end_line 分段读取）",
-      "- write_file：写入/覆盖文件内容（会完整覆盖，写前请先读取原文件）",
-      "- get_debug_snapshot：获取 Android Studio 断点快照（变量、调用栈）",
-      "- set_breakpoint：向 Android Studio 推送断点推荐",
-      "- wait_for_breakpoint：等待新断点命中（用户需在 AS 中运行项目）",
+      "",
+      "【重要规则】",
+      "- 需要读文件时，必须立即调用 read_file 工具，不要说「让我读取」。",
+      "- 需要修改文件时，必须立即调用 write_file 工具，不要说「让我修改」或「以下是修改后的代码」。",
+      "- 不允许只输出代码块而不调用工具。所有文件操作必须通过工具完成。",
+      "- write_file 会完整覆盖文件，写之前必须先用 read_file 读取原文件内容。",
+      "",
+      "可用工具：",
+      "- list_dir(path)：列出目录结构",
+      "- read_file(path, start_line?, end_line?)：读取文件内容",
+      "- write_file(path, content)：写入文件（完整覆盖）",
+      "- get_debug_snapshot()：获取 Android Studio 断点快照",
+      "- set_breakpoint(file, line, condition?)：推送断点推荐",
+      "- wait_for_breakpoint(timeout_seconds?)：等待新断点命中",
     ];
     if (workspaceRoot) {
       parts.push(`\n当前工作区根目录：${workspaceRoot}`);
+      parts.push("文件路径使用相对于工作区根目录的相对路径，例如：app/src/main/kotlin/com/example/Main.kt");
     }
     if (activeTab) {
       parts.push(`当前打开的文件：${activeTab.path}`);
@@ -965,8 +1033,13 @@ export default function EditorPage() {
 
     setChatMessages((prev) => [...prev, userMsg, assistantMsg]);
     setInputText("");
+    // 重置 textarea 高度
+    if (textareaRef.current) {
+      textareaRef.current.style.height = "auto";
+    }
     currentAssistantIdRef.current = assistantId;
     pendingToolCallsRef.current.clear();
+    writeFileBeforeRef.current.clear();
 
     const history = chatMessages.map((m) => ({
       id: m.id,
@@ -1012,6 +1085,29 @@ export default function EditorPage() {
           if (event.name === "wait_for_breakpoint") {
             setIsWaitingBreakpoint(true);
           }
+          // write_file 调用开始时，快照 before 内容（从 tabs 或后端读取）
+          if (event.name === "write_file") {
+            const targetPath = event.args?.path as string | undefined;
+            if (targetPath) {
+              setTabs((prevTabs) => {
+                const existingTab = prevTabs.find((t) => t.path === targetPath);
+                if (existingTab) {
+                  writeFileBeforeRef.current.set(targetPath, existingTab.content);
+                } else {
+                  // 文件未在 tabs 中打开，尝试从后端读取
+                  fetch(`${BACKEND_URL}/v1/workspace/file?path=${encodeURIComponent(targetPath)}`)
+                    .then((r) => r.ok ? r.json() : null)
+                    .then((data) => {
+                      if (data?.content !== undefined) {
+                        writeFileBeforeRef.current.set(targetPath, data.content);
+                      }
+                    })
+                    .catch(() => {});
+                }
+                return prevTabs; // 不修改 tabs
+              });
+            }
+          }
           pendingToolCallsRef.current.set(event.name, record);
           setChatMessages((prev) =>
             prev.map((m) =>
@@ -1041,22 +1137,47 @@ export default function EditorPage() {
               if (idx !== undefined) {
                 calls[idx] = { ...calls[idx], result: event.content, status: "done" };
               }
-              // write_file 完成，自动刷新编辑器中对应文件
+              // write_file 完成：构建 PendingDiff + 刷新编辑器 tab
               if (event.name === "write_file") {
                 const writtenPath = calls[idx ?? -1]?.args?.path as string | undefined;
-                if (writtenPath && writtenPath === activeTabPath) {
-                  fetch(`${BACKEND_URL}/v1/workspace/file?path=${encodeURIComponent(writtenPath)}`)
-                    .then((r) => r.json())
-                    .then((data) => {
-                      setTabs((prev) =>
-                        prev.map((t) =>
-                          t.path === writtenPath
-                            ? { ...t, content: data.content, modified: false }
-                            : t
-                        )
-                      );
-                    })
-                    .catch(() => {});
+                const afterContent = calls[idx ?? -1]?.args?.content as string | undefined;
+                if (writtenPath && afterContent !== undefined) {
+                  // 取 tool_call 时快照的 before 内容
+                  const beforeContent = writeFileBeforeRef.current.get(writtenPath) ?? "";
+                  writeFileBeforeRef.current.delete(writtenPath);
+
+                  const fileName = writtenPath.split("/").pop() ?? writtenPath;
+                  const language = extToLanguage(fileName);
+                  const { added, removed } = calcDiffLines(beforeContent, afterContent);
+
+                  // 更新 pendingDiffs
+                  setPendingDiffs((prev) => {
+                    const existingIdx = prev.findIndex((d) => d.path === writtenPath);
+                    const diff: PendingDiff = {
+                      path: writtenPath,
+                      name: fileName,
+                      language,
+                      before: beforeContent,
+                      after: afterContent,
+                      addedLines: added,
+                      removedLines: removed,
+                    };
+                    if (existingIdx >= 0) {
+                      const next = [...prev];
+                      next[existingIdx] = diff;
+                      return next;
+                    }
+                    return [...prev, diff];
+                  });
+
+                  // 同步更新编辑器 tab 内容（显示写入后的内容）
+                  setTabs((prevTabs) =>
+                    prevTabs.map((t) =>
+                      t.path === writtenPath
+                        ? { ...t, content: afterContent, modified: false }
+                        : t
+                    )
+                  );
                 }
               }
               return { ...m, toolCalls: calls };
@@ -1077,6 +1198,14 @@ export default function EditorPage() {
     inputText, selectedModel, streaming, chatMessages,
     sendMessage, buildSystemPrompt, activeTabPath, fetchDebugSnapshot,
   ]);
+
+  // textarea 自动扩展高度
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+  }, [inputText]);
 
   // ── 渲染 ──────────────────────────────────────────────────────────────────
 
@@ -1170,6 +1299,63 @@ export default function EditorPage() {
           </div>
         ) : (
           <>
+            {/* Agent 路径确认 banner（原生模式下，后端需要知道完整路径）*/}
+            {pendingFullPath !== null && (
+              <div
+                className="border-b px-3 py-2 flex flex-col gap-1.5"
+                style={{ borderColor: "var(--border-subtle)", background: "rgba(245,158,11,0.08)" }}
+              >
+                <p className="text-xs font-medium" style={{ color: "#f59e0b" }}>
+                  让 Agent 也能读写文件
+                </p>
+                <p className="text-xs" style={{ color: "var(--text-muted)" }}>
+                  确认本地完整路径：
+                </p>
+                <input
+                  value={pendingFullPath}
+                  onChange={(e) => setPendingFullPath(e.target.value)}
+                  className="w-full rounded border px-2 py-1 text-xs outline-none focus:border-[var(--accent-primary)]"
+                  style={{
+                    background: "var(--bg-primary)",
+                    borderColor: "var(--border-subtle)",
+                    color: "var(--text-primary)",
+                    fontFamily: "monospace",
+                  }}
+                />
+                <div className="flex gap-1.5">
+                  <button
+                    onClick={async () => {
+                      const path = pendingFullPath.trim();
+                      if (!path) return;
+                      try {
+                        const res = await fetch(`${BACKEND_URL}/v1/workspace/open`, {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ path }),
+                        });
+                        if (res.ok) {
+                          const data = await res.json();
+                          setWorkspaceRoot(data.root);
+                          setWorkspaceName(data.name);
+                        }
+                      } catch { /* 忽略 */ }
+                      setPendingFullPath(null);
+                    }}
+                    className="flex-1 rounded px-2 py-1 text-xs font-medium transition-colors"
+                    style={{ background: "#f59e0b", color: "#fff" }}
+                  >
+                    确认
+                  </button>
+                  <button
+                    onClick={() => setPendingFullPath(null)}
+                    className="rounded px-2 py-1 text-xs transition-colors hover:bg-[var(--bg-hover)]"
+                    style={{ color: "var(--text-muted)", border: "1px solid var(--border-subtle)" }}
+                  >
+                    跳过
+                  </button>
+                </div>
+              </div>
+            )}
             {/* 文件树 */}
             <div className="flex-1 overflow-y-auto py-1">
               {treeLoading ? (
@@ -1200,6 +1386,7 @@ export default function EditorPage() {
                   setWorkspaceName(null);
                   setFileTree([]);
                   setWorkspacePath("");
+                  setPendingFullPath(null);
                   dirHandleRef.current = null;
                   dirHandleRootRef.current = "";
                 }}
@@ -1241,6 +1428,9 @@ export default function EditorPage() {
                 {tab.modified && (
                   <span style={{ color: "var(--accent-primary)" }}> ●</span>
                 )}
+                {!tab.modified && pendingDiffs.some((d) => d.path === tab.path) && (
+                  <span style={{ color: "#f59e0b" }} title="Agent 已修改，待确认"> ◆</span>
+                )}
               </span>
               <button
                 onClick={(e) => closeTab(tab.path, e)}
@@ -1266,7 +1456,96 @@ export default function EditorPage() {
         </div>
 
         {/* 编辑器主体 */}
-        <div className="flex-1 overflow-hidden">
+        <div className="flex-1 overflow-hidden relative">
+          {/* Diff 视图弹层（覆盖编辑器） */}
+          {diffViewPath && (() => {
+            const diff = pendingDiffs.find((d) => d.path === diffViewPath);
+            if (!diff) return null;
+            return (
+              <div
+                className="absolute inset-0 z-10 flex flex-col"
+                style={{ background: "var(--bg-primary)" }}
+              >
+                {/* Diff 视图标题栏 */}
+                <div
+                  className="flex items-center gap-2 border-b px-3 py-1.5 flex-shrink-0"
+                  style={{ borderColor: "var(--border-subtle)", background: "var(--bg-secondary)" }}
+                >
+                  <GitCompare size={12} style={{ color: "var(--accent-primary)" }} />
+                  <span className="text-xs font-medium" style={{ color: "var(--text-primary)" }}>
+                    {diff.name}
+                  </span>
+                  <span className="text-xs" style={{ color: "#10b981" }}>+{diff.addedLines}</span>
+                  <span className="text-xs" style={{ color: "#ef4444" }}>-{diff.removedLines}</span>
+                  <div className="ml-auto flex items-center gap-1.5">
+                    {/* 接受此文件 */}
+                    <button
+                      onClick={() => {
+                        // 接受：保留 after 内容（已在 tab 中），从 pendingDiffs 移除
+                        setPendingDiffs((prev) => prev.filter((d) => d.path !== diffViewPath));
+                        setDiffViewPath(null);
+                      }}
+                      className="flex items-center gap-1 rounded px-2 py-1 text-xs font-medium transition-colors"
+                      style={{ background: "rgba(16,185,129,0.15)", color: "#10b981" }}
+                    >
+                      <Check size={11} />
+                      接受
+                    </button>
+                    {/* 拒绝此文件 */}
+                    <button
+                      onClick={() => {
+                        // 拒绝：恢复 before 内容到 tab
+                        setTabs((prev) =>
+                          prev.map((t) =>
+                            t.path === diffViewPath
+                              ? { ...t, content: diff.before, modified: false }
+                              : t
+                          )
+                        );
+                        setPendingDiffs((prev) => prev.filter((d) => d.path !== diffViewPath));
+                        setDiffViewPath(null);
+                      }}
+                      className="flex items-center gap-1 rounded px-2 py-1 text-xs font-medium transition-colors"
+                      style={{ background: "rgba(239,68,68,0.12)", color: "#ef4444" }}
+                    >
+                      <Ban size={11} />
+                      拒绝
+                    </button>
+                    {/* 关闭 diff 视图 */}
+                    <button
+                      onClick={() => setDiffViewPath(null)}
+                      className="rounded p-1 transition-colors hover:bg-[var(--bg-hover)]"
+                      title="关闭 Diff 视图"
+                    >
+                      <X size={12} style={{ color: "var(--text-muted)" }} />
+                    </button>
+                  </div>
+                </div>
+                {/* Monaco DiffEditor */}
+                <div className="flex-1 overflow-hidden">
+                  <MonacoDiffEditor
+                    height="100%"
+                    language={diff.language}
+                    original={diff.before}
+                    modified={diff.after}
+                    theme="vs-dark"
+                    options={{
+                      fontSize: 13,
+                      fontFamily: "'JetBrains Mono', 'Fira Code', Menlo, Monaco, monospace",
+                      lineHeight: 21,
+                      readOnly: true,
+                      renderSideBySide: true,
+                      scrollBeyondLastLine: false,
+                      minimap: { enabled: false },
+                      padding: { top: 10, bottom: 10 },
+                    }}
+                  />
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* 普通编辑器 */}
           {activeTabData ? (
             <MonacoEditor
               key={activeTabData.path}
@@ -1302,6 +1581,135 @@ export default function EditorPage() {
             </div>
           )}
         </div>
+
+        {/* ── Diff 汇总栏（Agent 修改文件后显示）── */}
+        {pendingDiffs.length > 0 && (() => {
+          const totalAdded = pendingDiffs.reduce((s, d) => s + d.addedLines, 0);
+          const totalRemoved = pendingDiffs.reduce((s, d) => s + d.removedLines, 0);
+          return (
+            <div
+              className="flex-shrink-0 border-t"
+              style={{ borderColor: "var(--border-subtle)", background: "var(--bg-secondary)" }}
+            >
+              {/* 主行：汇总信息 + 全部接受/拒绝 */}
+              <div className="flex items-center gap-2 px-3 py-1.5">
+                <button
+                  onClick={() => setDiffBarExpanded((v) => !v)}
+                  className="flex items-center gap-1.5 text-xs"
+                  style={{ color: "var(--text-secondary)" }}
+                >
+                  <GitCompare size={11} style={{ color: "var(--accent-primary)" }} />
+                  <span className="font-medium">{pendingDiffs.length} 个文件待确认</span>
+                  {diffBarExpanded
+                    ? <ChevronDown size={10} style={{ color: "var(--text-muted)" }} />
+                    : <ChevronRight size={10} style={{ color: "var(--text-muted)" }} />
+                  }
+                </button>
+                <span className="text-xs font-mono" style={{ color: "#10b981" }}>+{totalAdded}</span>
+                <span className="text-xs font-mono" style={{ color: "#ef4444" }}>-{totalRemoved}</span>
+                <div className="ml-auto flex items-center gap-1.5">
+                  {/* 全部接受 */}
+                  <button
+                    onClick={() => {
+                      // 接受所有：after 内容已在 tabs 中，直接清空 pendingDiffs
+                      setPendingDiffs([]);
+                      setDiffViewPath(null);
+                    }}
+                    className="flex items-center gap-1 rounded px-2 py-0.5 text-xs font-medium transition-colors"
+                    style={{ background: "rgba(16,185,129,0.15)", color: "#10b981" }}
+                  >
+                    <Check size={10} />
+                    全部接受
+                  </button>
+                  {/* 全部拒绝 */}
+                  <button
+                    onClick={() => {
+                      // 拒绝所有：恢复每个文件的 before 内容
+                      setTabs((prev) =>
+                        prev.map((t) => {
+                          const diff = pendingDiffs.find((d) => d.path === t.path);
+                          return diff ? { ...t, content: diff.before, modified: false } : t;
+                        })
+                      );
+                      setPendingDiffs([]);
+                      setDiffViewPath(null);
+                    }}
+                    className="flex items-center gap-1 rounded px-2 py-0.5 text-xs font-medium transition-colors"
+                    style={{ background: "rgba(239,68,68,0.12)", color: "#ef4444" }}
+                  >
+                    <Ban size={10} />
+                    全部拒绝
+                  </button>
+                </div>
+              </div>
+
+              {/* 展开的文件列表 */}
+              {diffBarExpanded && (
+                <div
+                  className="border-t"
+                  style={{ borderColor: "var(--border-subtle)" }}
+                >
+                  {pendingDiffs.map((diff) => (
+                    <div
+                      key={diff.path}
+                      className="flex items-center gap-2 px-3 py-1 hover:bg-[var(--bg-hover)] cursor-pointer"
+                      onClick={() => {
+                        setDiffViewPath(diff.path);
+                        setDiffBarExpanded(false);
+                      }}
+                    >
+                      <File size={11} style={{ color: "var(--text-muted)", flexShrink: 0 }} />
+                      <span
+                        className="flex-1 truncate text-xs font-mono"
+                        style={{ color: "var(--text-secondary)" }}
+                        title={diff.path}
+                      >
+                        {diff.name}
+                      </span>
+                      <span className="text-xs font-mono flex-shrink-0" style={{ color: "#10b981" }}>
+                        +{diff.addedLines}
+                      </span>
+                      <span className="text-xs font-mono flex-shrink-0" style={{ color: "#ef4444" }}>
+                        -{diff.removedLines}
+                      </span>
+                      {/* 单文件接受 */}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setPendingDiffs((prev) => prev.filter((d) => d.path !== diff.path));
+                          if (diffViewPath === diff.path) setDiffViewPath(null);
+                        }}
+                        className="rounded p-0.5 transition-colors hover:bg-[var(--bg-hover)]"
+                        title="接受此文件"
+                      >
+                        <Check size={11} style={{ color: "#10b981" }} />
+                      </button>
+                      {/* 单文件拒绝 */}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setTabs((prev) =>
+                            prev.map((t) =>
+                              t.path === diff.path
+                                ? { ...t, content: diff.before, modified: false }
+                                : t
+                            )
+                          );
+                          setPendingDiffs((prev) => prev.filter((d) => d.path !== diff.path));
+                          if (diffViewPath === diff.path) setDiffViewPath(null);
+                        }}
+                        className="rounded p-0.5 transition-colors hover:bg-[var(--bg-hover)]"
+                        title="拒绝此文件"
+                      >
+                        <Ban size={11} style={{ color: "#ef4444" }} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })()}
 
         {/* 底部状态栏 */}
         <div
@@ -1483,7 +1891,7 @@ export default function EditorPage() {
 
         {/* 输入区 */}
         <div
-          className="border-t p-3"
+          className="border-t px-3 pt-2.5 pb-2"
           style={{ borderColor: "var(--border-subtle)" }}
         >
           <div
@@ -1494,6 +1902,7 @@ export default function EditorPage() {
             }}
           >
             <textarea
+              ref={textareaRef}
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
               onKeyDown={(e) => {
@@ -1511,17 +1920,18 @@ export default function EditorPage() {
               }
               disabled={models.length === 0}
               rows={1}
-              className="flex-1 resize-none bg-transparent text-xs outline-none disabled:opacity-50"
+              className="flex-1 resize-none bg-transparent text-xs outline-none disabled:opacity-50 leading-relaxed"
               style={{
                 color: "var(--text-primary)",
-                maxHeight: "120px",
-                overflowY: "auto",
+                overflowY: "hidden",
+                minHeight: "20px",
+                maxHeight: "160px",
               }}
             />
             <button
               onClick={streaming ? abort : handleSend}
               disabled={models.length === 0 || (!streaming && !inputText.trim())}
-              className="flex-shrink-0 rounded-lg p-1.5 transition-colors disabled:opacity-40"
+              className="mb-0.5 flex-shrink-0 rounded-lg p-1.5 transition-colors disabled:opacity-40"
               style={{
                 background: streaming ? "#ef4444" : "var(--accent-primary)",
                 color: "#fff",
