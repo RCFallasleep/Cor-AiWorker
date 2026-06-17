@@ -1,0 +1,19 @@
+# Gradle
+.gradle/
+build/
+
+# IntelliJ Platform
+.idea/
+.intellijPlatform/
+
+# Kotlin build cache
+.kotlin/
+
+# Run configurations (local only)
+.run/
+
+# Local properties
+local.properties
+
+# macOS
+.DS_Store

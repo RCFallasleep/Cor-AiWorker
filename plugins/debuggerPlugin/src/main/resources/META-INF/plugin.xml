@@ -1,0 +1,55 @@
+<!-- Plugin Configuration File. -->
+<!-- v2.0.0 -->
+<idea-plugin>
+    <id>com.example.debuggerPlugin</id>
+    <name>AI Debugger</name>
+    <vendor url="https://www.xiaohongshu.com">XiaoHongShu</vendor>
+
+    <description><![CDATA[
+        Cor-AiWorker 断点调试插件（零配置版）。<br/>
+        断点命中时自动将变量快照推送到本地 Cor-AiWorker 后端（默认 localhost:8000），
+        同时轮询后端获取 Agent 推荐的断点位置并自动在 AS 中打断点。<br/>
+        无需配置 Lobi/OpenClaw 云端服务，Docker 启动即可使用。
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.lang</depends>
+    <depends>com.intellij.modules.java</depends>
+    <depends>org.jetbrains.android</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <!-- Tool Window -->
+        <toolWindow
+            id="AI Debugger"
+            anchor="right"
+            factoryClass="com.example.aidebugger.AiDebuggerToolWindowFactory"
+            icon="AllIcons.Toolwindows.ToolWindowDebugger"
+            canCloseContents="false"/>
+
+        <!-- App-level Settings Service -->
+        <applicationService
+            serviceImplementation="com.example.aidebugger.settings.AiDebuggerSettings"/>
+
+        <!-- Project-level Session Manager -->
+        <projectService
+            serviceImplementation="com.example.aidebugger.history.SessionManager"/>
+
+        <!-- Settings Page -->
+        <applicationConfigurable
+            parentId="tools"
+            instance="com.example.aidebugger.settings.AiDebuggerConfigurable"
+            id="com.example.aidebugger.settings.AiDebuggerConfigurable"
+            displayName="AI Debugger"/>
+
+        <!-- 项目打开后自动启动断点推荐轮询器，并注册自动打断点 listener -->
+        <postStartupActivity
+            implementation="com.example.aidebugger.AiDebuggerStartupActivity"/>
+    </extensions>
+
+    <projectListeners>
+        <listener
+            class="com.example.aidebugger.BreakpointListener"
+            topic="com.intellij.xdebugger.XDebuggerManagerListener"/>
+    </projectListeners>
+
+</idea-plugin>

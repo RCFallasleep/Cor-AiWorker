@@ -1,3 +1,6 @@
+# ── 本地 Docker 覆盖配置（含本地路径，不入库）──
+docker-compose.override.yml
+
 # ── Node / Next.js ──
 node_modules/
 .next/
@@ -56,6 +59,14 @@ android/.gradle/
 android/build/
 android/local.properties
 android/*.keystore
+
+# ── IntelliJ Plugin（编译产物，不入库）──
+plugins/debuggerPlugin/build/
+plugins/debuggerPlugin/.gradle/
+plugins/debuggerPlugin/.kotlin/
+plugins/debuggerPlugin/.intellijPlatform/
+plugins/debuggerPlugin/.run/
+plugins/debuggerPlugin/local.properties
 
 # ── 本地 Demo 项目（参考实现，不入库）──
 demos/
