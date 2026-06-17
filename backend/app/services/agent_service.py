@@ -114,10 +114,28 @@ async def _agent_loop_openai(body: ChatRequest) -> AsyncGenerator[str, None]:
         else:
             messages.insert(0, {"role": "system", "content": context_hint})
 
-    # 获取所有已注册工具的 schema
-    tools = tool_registry.to_openai_schemas()
+    # 获取工具列表（按 tool_names 白名单过滤）
+    if body.tool_names is None:
+        # 未指定：使用全部已注册工具
+        tools = tool_registry.to_openai_schemas()
+    elif len(body.tool_names) == 0:
+        # 空列表：禁用所有工具，降级为普通 chat
+        tools = []
+    else:
+        # 白名单过滤：只保留指定名称的工具
+        tools = [
+            t.to_openai_schema()
+            for t in tool_registry.all()
+            if t.name in body.tool_names
+        ]
+        logger.info(
+            "agent: tool_names filter applied | requested=%s available=%s",
+            body.tool_names,
+            [t["function"]["name"] for t in tools],
+        )
+
     if not tools:
-        logger.info("no tools registered, fallback to plain chat")
+        logger.info("no tools available, fallback to plain chat")
         from app.services.chat_service import _stream_openai  # 避免循环导入
         async for chunk in _stream_openai(body):
             yield chunk

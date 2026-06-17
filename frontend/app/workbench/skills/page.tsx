@@ -9,6 +9,7 @@ import {
   Code2,
   FileText,
   Zap,
+  Users,
   ToggleLeft,
   ToggleRight,
   Trash2,
@@ -43,7 +44,8 @@ interface Skill {
   id: string;
   name: string;
   description: string;
-  skill_type: "builtin" | "custom";
+  /** builtin = 内置工具 | collab = 协作工具 | custom = 用户自建 */
+  skill_type: "builtin" | "collab" | "custom";
   tags: string[];
   enabled: boolean;
   created_at: string;
@@ -81,6 +83,7 @@ const LANG_LABELS: Record<string, string> = {
 const TYPE_FILTERS = [
   { value: "all", label: "全部" },
   { value: "builtin", label: "内置" },
+  { value: "collab", label: "协作" },
   { value: "custom", label: "自建" },
 ];
 
@@ -160,6 +163,25 @@ function SkillCard({
   const [deleting, setDeleting] = useState(false);
 
   const isBuiltin = skill.skill_type === "builtin";
+  const isCollab = skill.skill_type === "collab";
+
+  // 根据类型决定颜色主题
+  const themeColor = isBuiltin ? "#3b82f6" : isCollab ? "#10b981" : "#8b5cf6";
+  const themeBg = isBuiltin
+    ? "rgba(59,130,246,0.12)"
+    : isCollab
+    ? "rgba(16,185,129,0.12)"
+    : "rgba(139,92,246,0.12)";
+  const hoverBorderColor = isBuiltin
+    ? "rgba(59,130,246,0.3)"
+    : isCollab
+    ? "rgba(16,185,129,0.3)"
+    : "rgba(139,92,246,0.3)";
+  const hoverShadowColor = isBuiltin
+    ? "rgba(59,130,246,0.1)"
+    : isCollab
+    ? "rgba(16,185,129,0.1)"
+    : "rgba(139,92,246,0.1)";
 
   return (
     <div
@@ -167,14 +189,14 @@ function SkillCard({
       onMouseLeave={() => setHovering(false)}
       style={{
         background: "var(--card-bg)",
-        border: `1px solid ${hovering ? "rgba(59,130,246,0.3)" : "var(--border-color)"}`,
+        border: `1px solid ${hovering ? hoverBorderColor : "var(--border-color)"}`,
         borderRadius: 12,
         padding: "18px 20px",
         display: "flex",
         flexDirection: "column",
         gap: 14,
         transition: "border-color 0.2s, box-shadow 0.2s",
-        boxShadow: hovering ? "0 0 0 1px rgba(59,130,246,0.1)" : "none",
+        boxShadow: hovering ? `0 0 0 1px ${hoverShadowColor}` : "none",
         opacity: skill.enabled ? 1 : 0.55,
         position: "relative",
       }}
@@ -186,9 +208,7 @@ function SkillCard({
             width: 40,
             height: 40,
             borderRadius: 10,
-            background: isBuiltin
-              ? "rgba(59,130,246,0.12)"
-              : "rgba(139,92,246,0.12)",
+            background: themeBg,
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
@@ -196,9 +216,11 @@ function SkillCard({
           }}
         >
           {isBuiltin ? (
-            <Zap size={18} style={{ color: "#3b82f6" }} />
+            <Zap size={18} style={{ color: themeColor }} />
+          ) : isCollab ? (
+            <Users size={18} style={{ color: themeColor }} />
           ) : (
-            <Code2 size={18} style={{ color: "#8b5cf6" }} />
+            <Code2 size={18} style={{ color: themeColor }} />
           )}
         </div>
 
@@ -221,14 +243,14 @@ function SkillCard({
                 fontSize: 10,
                 padding: "2px 7px",
                 borderRadius: 4,
-                background: isBuiltin ? "rgba(59,130,246,0.15)" : "rgba(139,92,246,0.15)",
-                color: isBuiltin ? "#60a5fa" : "#a78bfa",
+                background: `${themeColor}26`,
+                color: themeColor,
                 fontWeight: 500,
                 letterSpacing: "0.02em",
                 flexShrink: 0,
               }}
             >
-              {isBuiltin ? "内置" : "自建"}
+              {isBuiltin ? "内置" : isCollab ? "协作" : "自建"}
             </span>
           </div>
           <p
@@ -332,8 +354,8 @@ function SkillCard({
             {skill.enabled ? <ToggleRight size={16} /> : <ToggleLeft size={16} />}
           </button>
 
-          {/* 删除（内置不可删） */}
-          {!isBuiltin && (
+          {/* 删除（内置/协作工具不可删） */}
+          {!isBuiltin && !isCollab && (
             <button
               onClick={() => {
                 if (deleting) return;
@@ -502,6 +524,8 @@ function PreviewModal({ skill, onClose }: { skill: Skill; onClose: () => void })
                 borderRadius: 8,
                 background: skill.skill_type === "builtin"
                   ? "rgba(59,130,246,0.12)"
+                  : skill.skill_type === "collab"
+                  ? "rgba(16,185,129,0.12)"
                   : "rgba(139,92,246,0.12)",
                 display: "flex",
                 alignItems: "center",
@@ -511,6 +535,8 @@ function PreviewModal({ skill, onClose }: { skill: Skill; onClose: () => void })
             >
               {skill.skill_type === "builtin" ? (
                 <Zap size={14} style={{ color: "#3b82f6" }} />
+              ) : skill.skill_type === "collab" ? (
+                <Users size={14} style={{ color: "#10b981" }} />
               ) : (
                 <Code2 size={14} style={{ color: "#8b5cf6" }} />
               )}
@@ -534,7 +560,11 @@ function PreviewModal({ skill, onClose }: { skill: Skill; onClose: () => void })
               <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 1 }}>
                 {activeFile !== null && file
                   ? `${LANG_LABELS[file.language] ?? file.language} · ${formatBytes(new TextEncoder().encode(file.content).length)}`
-                  : `${skill.files.length} 个文件 · ${skill.skill_type === "builtin" ? "内置 Skill" : "自建 Skill"}`
+                  : `${skill.files.length} 个文件 · ${
+                      skill.skill_type === "builtin" ? "内置 Skill"
+                      : skill.skill_type === "collab" ? "协作 Skill"
+                      : "自建 Skill"
+                    }`
                 }
               </div>
             </div>

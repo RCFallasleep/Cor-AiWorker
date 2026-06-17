@@ -23,6 +23,23 @@ logger = logging.getLogger(__name__)
 # SQLite 数据库路径（与 agent_logs.db 同目录）
 _DB_PATH = Path(settings.log_db_path).parent / "skills.db"
 
+# 内置工具源码目录（相对于本文件）
+_TOOLS_DIR = Path(__file__).parent.parent / "tools"
+
+
+def _read_tool_source(filename: str) -> str:
+    """读取 app/tools/ 目录下的真实源文件内容。
+
+    这样 _BUILTIN_SKILLS 里展示的代码与实际执行的代码始终保持一致，
+    无需手动维护两份副本。
+    """
+    path = _TOOLS_DIR / filename
+    try:
+        return path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        logger.warning("builtin tool source not found | path=%s", path)
+        return f"# 源文件未找到：{path}\n"
+
 _conn: sqlite3.Connection | None = None
 
 
@@ -411,157 +428,113 @@ _BUILTIN_SKILLS: list[dict] = [
             },
             {
                 "filename": "search.py",
+                "content": _read_tool_source("search.py"),
+            },
+        ],
+    },
+    {
+        "name": "ReadDocument",
+        "description": "读取用户上传的文档内容，支持 PDF / DOCX / TXT / MD，自动分块（每块约 1500 字），Agent 按需按块读取，适合处理大文件。",
+        "skill_type": "builtin",
+        "tags": ["document", "pdf", "read", "file"],
+        "files": [
+            {
+                "filename": "README.md",
                 "content": (
-                    'from __future__ import annotations\n'
-                    '\n'
-                    'import logging\n'
-                    'import re\n'
-                    '\n'
-                    'import httpx\n'
-                    '\n'
-                    'from app.core.config import settings\n'
-                    'from app.tools.registry import ToolDefinition, tool_registry\n'
-                    '\n'
-                    'logger = logging.getLogger(__name__)\n'
-                    '\n'
-                    '# 每次搜索返回的最大结果条数\n'
-                    '_MAX_RESULTS = 5\n'
-                    '# 注入给模型的每条结果最大字符数（提炼后）\n'
-                    '_MAX_SNIPPET_CHARS = 120\n'
-                    '\n'
-                    '\n'
-                    'def _extract_key_sentences(text: str, max_chars: int) -> str:\n'
-                    '    """从摘要文本中提取信息密度最高的内容注入给模型。\n'
-                    '\n'
-                    '    策略：\n'
-                    '    1. 按句子切分（。！？.!?）\n'
-                    '    2. 优先保留含数字、日期、温度、地名等关键信息的句子\n'
-                    '    3. 去掉明显的导航/广告废话（"点击查看"、"更多内容"等）\n'
-                    '    4. 拼接到 max_chars 为止\n'
-                    '    """\n'
-                    '    if not text:\n'
-                    '        return ""\n'
-                    '\n'
-                    '    # 过滤废话模式\n'
-                    '    noise_patterns = re.compile(\n'
-                    '        r"(点击|查看更多|阅读全文|来源：|转载|版权|广告|订阅|关注|下载|APP|扫码|二维码"\n'
-                    '        r"|copyright|read more|click here|subscribe)",\n'
-                    '        re.IGNORECASE,\n'
-                    '    )\n'
-                    '\n'
-                    '    # 高价值内容模式（含数字、温度、日期、百分比、货币等）\n'
-                    '    value_patterns = re.compile(\n'
-                    '        r"(\\d+[°℃%℉]|\\d{4}年|\\d+月\\d+日|\\d+:\\d+|[￥$€£]\\d+|\\d+\\.\\d+|"\n'
-                    '        r"最高|最低|气温|天气|晴|雨|阴|雪|风|湿度|降水|预报)"\n'
-                    '    )\n'
-                    '\n'
-                    '    # 按句子切分\n'
-                    '    sentences = re.split(r"(?<=[。！？.!?])\\s*", text)\n'
-                    '    sentences = [s.strip() for s in sentences if s.strip()]\n'
-                    '\n'
-                    '    # 分两组：高价值句 + 普通句（都过滤废话）\n'
-                    '    high_value: list[str] = []\n'
-                    '    normal: list[str] = []\n'
-                    '    for s in sentences:\n'
-                    '        if noise_patterns.search(s):\n'
-                    '            continue\n'
-                    '        if value_patterns.search(s):\n'
-                    '            high_value.append(s)\n'
-                    '        else:\n'
-                    '            normal.append(s)\n'
-                    '\n'
-                    '    # 优先拼接高价值句，不够再补普通句\n'
-                    '    result = ""\n'
-                    '    for s in high_value + normal:\n'
-                    '        if len(result) + len(s) + 1 > max_chars:\n'
-                    '            remaining = max_chars - len(result)\n'
-                    '            if remaining > 20:\n'
-                    '                result += s[:remaining]\n'
-                    '            break\n'
-                    '        result += s + " "\n'
-                    '\n'
-                    '    return result.strip() or text[:max_chars]\n'
-                    '\n'
-                    '\n'
-                    'async def _web_search_handler(query: str) -> str:\n'
-                    '    """调用 SearXNG 实例执行联网搜索，返回提炼后的精简结果。"""\n'
-                    '    base_url = settings.searxng_base_url\n'
-                    '    if not base_url:\n'
-                    '        return "[错误] 未配置 SearXNG 实例地址（SEARXNG_BASE_URL），无法执行联网搜索。"\n'
-                    '\n'
-                    '    params = {\n'
-                    '        "q": query,\n'
-                    '        "format": "json",\n'
-                    '        "language": "zh-CN",\n'
-                    '        "safesearch": "1",\n'
-                    '    }\n'
-                    '\n'
-                    '    try:\n'
-                    '        async with httpx.AsyncClient(timeout=15.0) as client:\n'
-                    '            resp = await client.get(f"{base_url}/search", params=params)\n'
-                    '            resp.raise_for_status()\n'
-                    '            data = resp.json()\n'
-                    '    except httpx.TimeoutException:\n'
-                    '        logger.warning("searxng timeout | query=%s", query)\n'
-                    '        return f"[错误] 搜索超时。查询：{query}"\n'
-                    '    except httpx.HTTPStatusError as e:\n'
-                    '        logger.error("searxng http error | status=%s query=%s", e.response.status_code, query)\n'
-                    '        return f"[错误] 搜索服务异常（{e.response.status_code}）。"\n'
-                    '    except Exception as e:\n'
-                    '        logger.error("searxng error | %s", e, exc_info=True)\n'
-                    '        return f"[错误] 搜索失败：{e}"\n'
-                    '\n'
-                    '    results = data.get("results", [])\n'
-                    '    if not results:\n'
-                    '        return f"未找到「{query}」的相关结果。"\n'
-                    '\n'
-                    '    # 提炼每条结果，只保留信息密度高的内容\n'
-                    '    lines = [f"搜索「{query}」："]\n'
-                    '    kept = 0\n'
-                    '    for r in results:\n'
-                    '        if kept >= _MAX_RESULTS:\n'
-                    '            break\n'
-                    '        title   = r.get("title", "").strip()\n'
-                    '        content = r.get("content", "").strip()\n'
-                    '        snippet = _extract_key_sentences(content, _MAX_SNIPPET_CHARS)\n'
-                    '        if title:\n'
-                    '            line = f"· {title}"\n'
-                    '            if snippet:\n'
-                    '                line += f"：{snippet}"\n'
-                    '            lines.append(line)\n'
-                    '            kept += 1\n'
-                    '\n'
-                    '    logger.debug(\n'
-                    '        "web_search | query=%s results_raw=%d results_kept=%d output_chars=%d",\n'
-                    '        query, len(results), kept, sum(len(l) for l in lines),\n'
-                    '    )\n'
-                    '    return "\\n".join(lines)\n'
-                    '\n'
-                    '\n'
-                    '# ── 注册到全局 Tool 注册表 ────────────────────────────────────────────────────\n'
-                    '\n'
-                    'web_search_tool = ToolDefinition(\n'
-                    '    name="web_search",\n'
-                    '    description=(\n'
-                    '        "联网搜索工具。获取实时信息、最新新闻、当前数据时使用。"\n'
-                    '        "返回已提炼的关键信息，通常 1 次搜索即可回答问题。"\n'
-                    '        "若结果不理想，换不同关键词再搜 1 次，之后直接基于已有信息回答。"\n'
-                    '    ),\n'
-                    '    parameters={\n'
-                    '        "type": "object",\n'
-                    '        "properties": {\n'
-                    '            "query": {\n'
-                    '                "type": "string",\n'
-                    '                "description": "搜索关键词，简洁精准，如「重庆 天气 今天」",\n'
-                    '            },\n'
-                    '        },\n'
-                    '        "required": ["query"],\n'
-                    '    },\n'
-                    '    handler=_web_search_handler,\n'
-                    ')\n'
-                    '\n'
-                    'tool_registry.register(web_search_tool)\n'
+                    "# ReadDocument Skill\n\n"
+                    "让 Agent 按需读取用户上传的文档内容，支持大文件分块读取。\n\n"
+                    "## 功能\n\n"
+                    "- **多格式支持**：PDF、DOCX/DOC、TXT、MD\n"
+                    "- **自动分块**：每块约 1500 字，在段落边界切分，避免截断语义\n"
+                    "- **按需读取**：Agent 从 chunk_index=0 开始，根据需要递增读取后续块\n"
+                    "- **TTL 管理**：文档上传后 2 小时内有效，过期自动清理\n\n"
+                    "## 参数\n\n"
+                    "| 参数 | 类型 | 必填 | 说明 |\n"
+                    "|------|------|------|------|\n"
+                    "| `file_id` | string | ✓ | 文档 ID，由上传接口返回 |\n"
+                    "| `chunk_index` | integer | ✗ | 块序号，从 0 开始，默认 0 |\n\n"
+                    "## 返回格式\n\n"
+                    "```\n"
+                    "[文档块 1/3]（共 3 块，如需继续请调用 read_document(file_id='xxx', chunk_index=1)）\n\n"
+                    "文档正文内容...\n"
+                    "```\n\n"
+                    "## 使用流程\n\n"
+                    "1. 用户在对话框上传文档\n"
+                    "2. 系统自动解析并在 system prompt 中注入文件信息\n"
+                    "3. Agent 调用 `read_document` 工具读取内容\n"
+                    "4. 如有多块，根据返回提示递增 chunk_index 继续读取\n"
                 ),
+            },
+            {
+                "filename": "document_store.py",
+                "content": _read_tool_source("../services/document_store.py"),
+            },
+            {
+                "filename": "read_document.py",
+                "content": _read_tool_source("read_document.py"),
+            },
+        ],
+    },
+    {
+        "name": "ForwardMessage",
+        "description": "协作工具：将用户的消息通过 Agent 转发给指定联系人。对方会收到一条特殊标注的消息，显示「TA 的 Agent，转发自 [发起人]」。在交流协作的 Agent 对话中使用。",
+        "skill_type": "collab",
+        "tags": ["collab", "message", "forward"],
+        "files": [
+            {
+                "filename": "README.md",
+                "content": (
+                    "# ForwardMessage Skill\n\n"
+                    "协作工具：让 Agent 代替用户将消息转发给联系人。\n\n"
+                    "## 功能\n\n"
+                    "- **Agent 转发**：以 `agent_forward` 消息类型写入数据库\n"
+                    "- **实时推送**：通过 WebSocket 推送给接收方（如果在线）\n"
+                    "- **特殊标注**：对方看到「TA 的 Agent，转发自 [发起人]」紫色气泡\n\n"
+                    "## 参数\n\n"
+                    "| 参数 | 类型 | 必填 | 说明 |\n"
+                    "|------|------|------|------|\n"
+                    "| `receiver_id` | string | ✓ | 接收方用户 ID |\n"
+                    "| `content` | string | ✓ | 要转发的消息内容 |\n"
+                    "| `sender_id` | string | ✓ | 发起转发的用户 ID |\n\n"
+                    "## 使用场景\n\n"
+                    "在「交流协作 → Agent 起草」页面，用户确认消息后，Agent 调用此工具发送。\n"
+                ),
+            },
+            {
+                "filename": "forward_message.py",
+                "content": _read_tool_source("forward_message.py"),
+            },
+        ],
+    },
+    {
+        "name": "SaveMemory",
+        "description": "协作工具：将重要信息保存为 Agent 记忆，供后续对话参考或在 Agent 养成页查看。支持 soul / memory / user / common 四种记忆类型。",
+        "skill_type": "collab",
+        "tags": ["collab", "memory", "save"],
+        "files": [
+            {
+                "filename": "README.md",
+                "content": (
+                    "# SaveMemory Skill\n\n"
+                    "协作工具：让 Agent 将重要信息持久化为记忆条目。\n\n"
+                    "## 功能\n\n"
+                    "- **四层记忆**：soul（人设）/ memory（经历）/ user（用户性格）/ common（公共，对方 Agent 可见）\n"
+                    "- **持久化**：写入后端 `agent_memories` 表，在 Agent 养成页「记忆」Tab 可查看\n"
+                    "- **跨对话共享**：common 类型记忆会在对方 Agent 起草消息时自动注入\n\n"
+                    "## 参数\n\n"
+                    "| 参数 | 类型 | 必填 | 说明 |\n"
+                    "|------|------|------|------|\n"
+                    "| `user_id` | string | ✓ | 记忆归属的用户 ID |\n"
+                    "| `type` | string | ✓ | 记忆类型：soul / memory / user / common |\n"
+                    "| `content` | string | ✓ | 记忆内容 |\n"
+                    "| `title` | string | ✗ | 记忆标题（可选） |\n\n"
+                    "## 触发时机\n\n"
+                    "用户在 Agent 对话中说「记住这个」「存到记忆」等指令时，Agent 自动调用。\n"
+                ),
+            },
+            {
+                "filename": "save_memory.py",
+                "content": _read_tool_source("save_memory.py"),
             },
         ],
     },
@@ -581,9 +554,9 @@ def seed_builtin_skills() -> None:
     now = datetime.utcnow().isoformat()
 
     for spec in _BUILTIN_SKILLS:
-        # 按名称查找已有内置 Skill
+        # 按名称查找已有内置/collab Skill（skill_type 可能是 builtin 或 collab）
         row = conn.execute(
-            "SELECT id FROM skills WHERE name = ? AND skill_type = 'builtin'",
+            "SELECT id FROM skills WHERE name = ? AND skill_type IN ('builtin', 'collab')",
             (spec["name"],),
         ).fetchone()
 

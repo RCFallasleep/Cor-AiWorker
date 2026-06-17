@@ -34,7 +34,17 @@ export interface ImageAttachment {
   preview: string; // base64 data URL
 }
 
-export type Attachment = ImageAttachment;
+/** 文档附件（上传后由后端解析，Agent 通过 read_document 工具按需读取） */
+export interface DocumentAttachment {
+  id: string;
+  name: string;
+  type: "document";
+  fileId?: string;       // 后端返回的 file_id（上传成功后填充）
+  totalChunks?: number;  // 分块数
+  size?: number;
+}
+
+export type Attachment = ImageAttachment | DocumentAttachment;
 
 export interface StreamState {
   streaming: boolean;
@@ -107,10 +117,30 @@ function buildRequestBody(
   systemPrompt?: string,
   /** 当前用户消息的附件（图片等），用于替换最后一条 user 消息的 content */
   attachments?: Attachment[],
+  /**
+   * 工具白名单：仅启用列表中的工具名。
+   * - null：使用全部已注册工具（默认）
+   * - []：禁用所有工具（纯 Chat 场景）
+   * - string[]：只启用指定工具（Skill 中心场景）
+   */
+  toolNames?: string[] | null,
 ): string {
-  // 如果有 Agent system prompt，注入为第一条 system 消息
-  const baseMessages: { role: string; content: unknown }[] = systemPrompt
-    ? [{ role: "system", content: systemPrompt }, ...messages]
+  // 构建文档注入提示（告知 Agent 有哪些文件可读）
+  const docAttachments = (attachments ?? []).filter(
+    (a): a is DocumentAttachment => a.type === "document" && !!(a as DocumentAttachment).fileId
+  );
+  const docHint = docAttachments.length > 0
+    ? "\n\n---\n用户上传了以下文档，你可以使用 read_document 工具按需读取：\n"
+      + docAttachments.map((d) =>
+          `- 文件名：${d.name}，file_id：${d.fileId}，共 ${d.totalChunks ?? "?"} 块`
+        ).join("\n")
+      + "\n读取时从 chunk_index=0 开始，根据返回的 total_chunks 决定是否继续读取后续块。"
+    : "";
+
+  // 如果有 Agent system prompt 或文档提示，注入为第一条 system 消息
+  const combinedSystem = (systemPrompt ?? "") + docHint;
+  const baseMessages: { role: string; content: unknown }[] = combinedSystem.trim()
+    ? [{ role: "system", content: combinedSystem.trim() }, ...messages]
     : [...messages];
 
   // 最后一条 user 消息如果有图片附件，替换为多模态 content
@@ -135,6 +165,8 @@ function buildRequestBody(
       provider: model.keyRecord.provider,
       context: context ?? null,
       session_id: sessionId ?? null,
+      // tool_names 为 undefined 时不传（后端默认使用全部工具）
+      ...(toolNames !== undefined ? { tool_names: toolNames } : {}),
     });
   }
   return JSON.stringify({
@@ -170,6 +202,12 @@ export function useChatStream() {
       systemPrompt?: string,
       /** 当前消息的图片附件 */
       attachments?: Attachment[],
+      /**
+       * 工具白名单（来自 Skill 中心）：
+       * - null/undefined：使用全部工具
+       * - string[]：只启用指定工具名
+       */
+      toolNames?: string[] | null,
     ) => {
       setState({ streaming: true, error: null });
 
@@ -186,7 +224,7 @@ export function useChatStream() {
         const res = await fetch(endpoint, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: buildRequestBody(model, messages, context, sessionId, systemPrompt, attachments),
+          body: buildRequestBody(model, messages, context, sessionId, systemPrompt, attachments, toolNames),
           signal: abortRef.current.signal,
         });
 

@@ -77,7 +77,17 @@ export function NavGroupSection({ group, collapsed, isFirst }: NavGroupProps) {
           style={{ display: "flex", flexDirection: "column", gap: "2px", padding: "0 8px" }}
         >
           {group.items.map((item) => {
-            const isActive = pathname === item.href;
+            // 精确匹配 or 前缀匹配（但要排除被其他更长 href 覆盖的情况）
+            const exactMatch = pathname === item.href;
+            const prefixMatch = item.href !== "/" && pathname.startsWith(item.href + "/");
+            // 检查同组内是否有更精确的匹配项（更长的 href）
+            const hasBetterMatch = group.items.some(
+              (other) =>
+                other.href !== item.href &&
+                other.href.length > item.href.length &&
+                (pathname === other.href || pathname.startsWith(other.href + "/"))
+            );
+            const isActive = (exactMatch || prefixMatch) && !hasBetterMatch;
             const Icon = item.icon;
 
             return (

@@ -1,8 +1,8 @@
 import type { Metadata } from "next";
 import "./globals.css";
-import { Sidebar } from "@/components/sidebar/sidebar";
-import { Topbar } from "@/components/header/topbar";
 import { ThemeProvider } from "@/contexts/theme-context";
+import { AuthProvider } from "@/contexts/auth-context";
+import { AppShell } from "@/components/layout/app-shell";
 
 export const metadata: Metadata = {
   title: "Cor-AiWorker",
@@ -21,30 +21,11 @@ export default function RootLayout({
     <html lang="zh-CN">
       <body>
         <ThemeProvider>
-          <div
-            style={{
-              display: "flex",
-              height: "100vh",
-              overflow: "hidden",
-              minWidth: "600px",
-              backgroundColor: "var(--background)",
-            }}
-          >
-            <Sidebar />
-            <div style={{ display: "flex", flexDirection: "column", flex: 1, overflow: "hidden" }}>
-              <Topbar />
-              <main
-                style={{
-                  flex: 1,
-                  overflow: "auto",
-                  backgroundColor: "var(--background)",
-                  color: "var(--foreground)",
-                }}
-              >
-                {children}
-              </main>
-            </div>
-          </div>
+          <AuthProvider>
+            <AppShell>
+              {children}
+            </AppShell>
+          </AuthProvider>
         </ThemeProvider>
       </body>
     </html>

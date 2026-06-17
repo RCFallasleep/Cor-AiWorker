@@ -197,8 +197,8 @@ def load_enabled_skills() -> int:
     skills = skill_store.list_skills(enabled_only=True)
     count = 0
     for skill in skills:
-        if skill.skill_type == "builtin":
-            # 内置 Skill 已通过 search.py 等模块直接注册，跳过
+        if skill.skill_type in ("builtin", "collab"):
+            # builtin / collab Skill 已通过 main.py import 直接注册到 tool_registry，跳过沙箱执行
             continue
         py_sources = [f.content for f in skill.files if f.language == "python"]
         if not py_sources:

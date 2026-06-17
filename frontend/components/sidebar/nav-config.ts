@@ -38,7 +38,7 @@ export const navGroups: NavGroup[] = [
     id: "corwork",
     label: "协作",
     items: [
-      { label: "协作交流", href: "/corwork", icon: Users },
+      { label: "交流协作", href: "/corwork", icon: Users },
       { label: "Agent蜂巢", href: "/corwork/think-tank", icon: BrainCircuit },
     ],
   },

@@ -8,6 +8,7 @@ import { ChatInput } from "@/components/chat/chat-input";
 import { useChatStream, type AgentEvent, type Attachment } from "@/lib/hooks/use-chat-stream";
 import { useAvailableModels } from "@/lib/hooks/use-available-models";
 import { useClientContext } from "@/lib/hooks/use-client-context";
+import { useEnabledSkillTools } from "@/lib/hooks/use-enabled-skill-tools";
 import { conversationRepo } from "@/lib/repositories/conversation-repository";
 import { agentRepo } from "@/lib/repositories/agent-repository";
 import { type ChatMessage, type AgentStep } from "@/lib/mock-chat-data";
@@ -79,6 +80,8 @@ function ChatPageInner() {
 
   // 从 API Key 列表中，根据 Agent 绑定的模型名找到对应的 AvailableModel
   const { models, loading: modelsLoading } = useAvailableModels();
+  // 从 Skill 中心拉取已启用的工具名白名单（排除协作专用工具）
+  const { toolNames } = useEnabledSkillTools();
   const currentModel: AvailableModel | undefined = currentAgent
     ? (models.find((m) => m.label === currentAgent.model || m.apiName === currentAgent.model) ?? models[0])
     : undefined;
@@ -369,9 +372,10 @@ function ChatPageInner() {
         convId,                            // sessionId → 后端日志关联
         currentAgent?.systemPrompt || undefined,  // Agent system prompt
         attachments,                       // 图片附件
+        toolNames,                         // Skill 中心工具白名单（排除协作专用工具）
       );
     },
-    [messages, currentModel, currentAgent, sendMessage, streaming, clientContext, updateAgentSteps]
+    [messages, currentModel, currentAgent, sendMessage, streaming, clientContext, updateAgentSteps, toolNames]
   );
 
   return (

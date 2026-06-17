@@ -2,21 +2,182 @@
 
 > 项目名称：Cor-AiWorker
 > 项目定位：基于多 Agent 协作的团队开发对齐系统
-> 技术选型：Web 前端 Next.js 15 + React + TypeScript / 后端 Python + FastAPI（编排自实现）/ 客户端 Android（Compose，按需）
+> 技术选型：Web 前端 Next.js 15 + React + TypeScript / 后端 Python + FastAPI（编排自实现）/ 客户端 Android（Jetpack Compose）
 
 ---
 
-## 当前阶段：Phase 4 — MCP/Skill 建设 & 多模态 Chat
+## 当前阶段：Phase 6 — 消息对话与 Agent 转发，Agent 记忆后端化
 
-**状态**：已完成（Skills 看板 + 多模态图片输入 + 粘贴截图）
-**开始时间**：2026-06-15
-**最后更新**：2026-06-15
+**状态**：进行中（6-1a/6-1b/6-1c 核心功能已完成，「公共记忆」管理入口延后）
+**开始时间**：2026-06-17
+**最后更新**：2026-06-17
 
 ### 阶段说明
 
-在 Phase 3 多 Agent 推演能力的基础上，本阶段完成两条主线：
-1. **Skills 看板**：后端 SQLite 持久化 + CRUD API，前端仓库风格预览弹窗，内置 Skill 种子数据自动同步
-2. **多模态 Chat**：根据模型 `supportsVision` 字段动态开关图片上传，支持 OpenAI/Anthropic/Bedrock 三种协议的多模态格式转换，以及系统截图/QQ/微信截图直接粘贴
+本阶段在 Phase 5 协作基础上，完成消息协作的核心体验升级：
+
+1. **联系人交互完善**：头像点击弹出小卡片，卡片内有「和 TA 的 Agent 对话」入口
+2. **Agent 代理对话**：新开一个 Chat LLM 样式的对话，Model 本地选，Prompt = MCP 预置模版 + 对方 ComMemory（从后端拉取），目的是高效了解对方动向
+3. **Agent 转发 MCP**：在 Agent 对话里让 Agent 调用 `forward_message` 工具，以「自己的 Agent」身份向对方发消息，对方看到「[发送者] 的 Agent，转发自 [我]」
+4. **Agent 记忆后端化**：三层记忆（Soul/Memory/User/ComMemory）统一上后端，用户手动指定内容写入，可编辑，ComMemory 跨 Agent 共享
+
+### 架构决策
+
+| 决策项 | 结论 |
+|--------|------|
+| Agent 对话的 Model | 本地提供（用户自选，走本地 API Key） |
+| Agent 对话的 Prompt | MCP 预置模版（「你是 XX 的代理人...」）+ 对方 ComMemory（后端拉取） |
+| 转发消息的发送者 | 显示为「[我] 的 Agent，转发自 [我]」，对方看到特殊样式 |
+| 记忆写入时机 | 用户手动指定内容保存（MCP 工具触发写入，或后端管理页编辑） |
+| ComMemory 存储 | 后端 `agent_memories` 表，type=common，跨 Agent 可读 |
+
+---
+
+### Phase 6-1a：联系人头像卡片 + Agent 对话入口 ✅
+
+#### 后端
+- [x] `agent_memories` 表：`id / user_id / agent_id / type（soul/memory/user/common）/ title / content / updated_at`
+- [x] `GET /v1/memories/peer/{user_id}/common`：获取指定用户的 ComMemory（供 Agent 对话注入 Prompt）
+- [x] `GET /v1/memories/me`：获取我的所有记忆（按 type 分组）
+- [x] `POST /v1/memories`：新建记忆条目
+- [x] `PUT /v1/memories/{id}`：编辑记忆内容
+- [x] `DELETE /v1/memories/{id}`：删除记忆
+
+#### 前端 — 联系人卡片
+- [x] 会话列表头像点击 → 弹出联系人小卡片（用户名 / Agent 名 / 两个按钮：「发消息」「让 Agent 帮我起草」）
+- [x] 跳转到 `/corwork/messages/${peerId}/agent`（消息模块内嵌 Agent 起草页）
+
+#### 前端 — Agent 对话页（重构为「我的 Agent 起草」思路）
+- [x] 进入对话时，从后端拉取对方 ComMemory（`GET /v1/memories/peer/{userId}/common`）
+- [x] 构建 System Prompt：「你是 {myName} 的助手，帮我给 {peerName} 起草消息」+ 对方 ComMemory 注入
+- [x] 使用 `useAvailableModels` hook 读取真实 API Key（修复 401 bug）
+- [x] 顶部标识：「我的 Agent → {peerName}」+ 模型选择器
+- [x] 快捷提示按钮：「帮我起草一条消息」「我想约他/她开会」「帮我问一下进度」
+- [x] 工具调用卡片：`forward_message` 显示「📨 发送给 {peerName}」+ 消息内容预览
+
+---
+
+### Phase 6-1b：Agent 转发 MCP 工具 ✅
+
+#### 后端
+- [x] 新增 `forward_message` MCP 工具（`app/tools/forward_message.py`）
+  - 参数：`receiver_id: str`，`content: str`（Agent 总结后的转发内容）
+  - 写入 `msg_type = "agent_forward"` 消息到 DB + WebSocket 推送给接收方
+  - 自动注册到全局 `tool_registry`
+- [x] `messages` 表新增 `forward_from` 字段（原始发送者 user_id）
+- [x] `GET /v1/collab/messages/{peerId}` 返回 `forward_from` 字段
+
+#### 前端
+- [x] 转发消息特殊气泡样式：紫色渐变气泡 + Sparkles 头像 + 「TA 的 Agent 转发」/ 「我的 Agent 转发」标签
+- [x] 接收方聊天页：识别 `msg_type=agent_forward`，渲染特殊样式
+
+---
+
+### Phase 6-1c：Agent 记忆管理（进行中）
+
+#### 后端（已在 6-1a 建表，接口已完成）
+- [x] `GET /v1/memories/me`：返回我的所有记忆（soul/memory/user/common 分组）
+- [x] 记忆写入 MCP 工具（`save_memory.py`）：Agent 对话中用户说「记住这个」→ Agent 调用工具写入后端
+
+#### 前端 — 记忆管理抽屉
+- [x] 消息对话页顶部栏新增「记忆」按钮（绿色，Brain 图标）
+- [x] 点击弹出右侧抽屉（`MemoryDrawer` 组件，`components/corwork/memory-drawer.tsx`）
+- [x] 按 type 分组展示（公共记忆 / 灵魂设定 / 工作记忆 / 用户记忆），各组可折叠
+- [x] 每组显示条目数量角标 + 「+」新建按钮
+- [x] 条目 hover 显示编辑/删除按钮，删除需二次确认
+- [x] 内联编辑表单（标题可选 + 内容必填），保存后实时更新列表
+- [ ] 「公共记忆」管理入口（ComMemory，在消息页或设置页，可新建/编辑/删除）
+
+---
+
+## Phase 5（已完成）— Cor-AiWorker 协作建设（前端 + 后端 + 客户端）
+
+**状态**：完成
+**开始时间**：2026-06-16
+**完成时间**：2026-06-17
+
+### 阶段说明
+
+本阶段解决的核心痛点是**人与人之间协作的需求对齐问题**：
+
+- 找某个人聊天时不知道切入口，和人直接交流有心理负担
+- 解法：让 Agent 作为代理人，用户先和对方的 Agent 对话 → 确认表达 → Agent 转发给真人
+- 人与人直接合作项目时，需要代理 Agent 对接一层需求，再和别人的 Agent 对接二层需求
+
+**本阶段先在 Web 端完成 UI，Android 端同步跟进核心功能。**
+
+### Phase 5A 任务清单（后端基础建设）
+
+#### 后端 — 平台数据库与用户系统
+- [x] `core/config.py`：新增 `corwork_db_path`（`/data/corwork.db`）、JWT 配置（secret/algorithm/expire）、Android 模拟器 CORS 白名单
+- [x] `services/corwork_db.py`：平台核心数据库，WAL 模式，5 张表（users / agent_profiles / contacts / messages / projects / project_members），幂等初始化
+- [x] `services/user_service.py`：bcrypt 密码哈希、JWT 签发/验证、用户 CRUD（create/authenticate/get_by_id/get_by_username/list）
+- [x] `core/auth.py`：FastAPI 依赖注入（`get_current_user` / `get_current_user_optional`），Bearer Token 解析
+- [x] `api/v1/auth.py`：`POST /v1/auth/register`、`POST /v1/auth/login`、`GET /v1/auth/me`
+- [x] `requirements.txt` 新增 `passlib[bcrypt]==1.7.4`、`python-jose[cryptography]==3.3.0`
+
+#### 后端 — 协作消息系统
+- [x] `api/v1/collab.py`：完整协作 API 路由
+  - Agent 名片：`GET/PUT /v1/collab/agent-profile`、`GET /v1/collab/agent-profile/{user_id}`
+  - 联系人：`GET/POST /v1/collab/contacts`、`DELETE /v1/collab/contacts/{id}`
+  - 消息：`GET /v1/collab/messages/{peer_id}`（分页+自动标记已读）、`POST /v1/collab/messages`
+  - 会话列表：`GET /v1/collab/conversations`（含最新消息+未读数）
+  - 用户搜索：`GET /v1/collab/users/search?q=`
+  - WebSocket：`WS /v1/collab/ws?token=<jwt>`（实时消息推送）
+- [x] `_WSManager`：按 user_id 管理 WebSocket 连接池，支持多设备同时在线
+- [x] `_agent_auto_reply()`：Agent 模拟回复（local 模式），预留 `platform` 模式接口（`endpoint_url`）
+- [x] `_make_conversation_id()`：双向唯一会话 ID（两个 user_id 排序拼接）
+
+#### 后端 — 管理界面升级
+- [x] `api/v1/admin.py`：`GET /v1/admin/stats`（系统统计 JSON）+ `GET /v1/admin/`（HTML 管理面板）
+- [x] 管理面板功能：概览（运行时长/用户数/消息数/数据库大小）+ 用户列表 + Agent 日志流 + 快捷链接
+- [x] `main.py` 根路径 `/` 重定向到 `/v1/admin/`，打开 localhost:8000 直接进管理面板
+
+#### 前端 — 认证系统
+- [x] `lib/api/client.ts`：统一 API 客户端（Token 管理、请求头注入、401 自动跳转登录、authApi/collabApi/createCollabWS）
+- [x] `contexts/auth-context.tsx`：AuthProvider + useAuth Hook（user/loading/login/register/logout）
+- [x] `app/login/page.tsx`：登录/注册页（Tab 切换、表单验证、错误提示）
+- [x] `components/layout/app-shell.tsx`：AppShell 组件，`/login` 路径跳过侧边栏，其他路径正常渲染
+- [x] `app/layout.tsx`：引入 AuthProvider + AppShell，替换原有硬编码布局
+
+#### 前端 — 消息协作页面
+- [x] `app/corwork/messages/page.tsx`：会话列表页（ConversationItem 组件、未读角标、添加联系人弹窗、用户搜索）
+- [x] `app/corwork/messages/[peerId]/page.tsx`：对话页（MessageBubble 气泡、乐观更新、WebSocket 实时接收、Enter 发送、Agent 回复紫色标识）
+
+### Phase 5 后续任务清单
+
+#### Web 端 — 已完成
+- [x] 消息页重构：左右分栏布局（企业微信风格），`messages/layout.tsx` + `ConversationList` 组件
+- [x] 好友申请系统：`friend_requests` 表 + 6 个接口（发申请/查收到/查发出/同意拒绝/撤回/删除好友）
+- [x] WebSocket 实时推送好友申请通知（`friend_request` / `friend_request_result` 事件）
+- [x] 前端好友申请：`FriendRequestInbox` 组件 + Bell 角标 + 添加好友改为发申请流程
+- [x] 侧边栏用户头像：移到顶部，点击弹出用户卡片（含退出登录）
+- [x] Bug 修复：`friend_requests` 表 404（`sqlite_master` 迁移检测）
+- [x] Bug 修复：多 Tab 登录态互相覆盖（`localStorage` → `sessionStorage` tab 级别隔离）
+- [x] Bug 修复：CORS + credentials 冲突（`allow_origin_regex=".*"` + `allow_credentials=False`）
+
+#### Web 端 — 待完成
+- [ ] 项目 Tab：新建项目 + 项目看板
+- [ ] 协作看板 Tab：占位
+- [ ] Agent 名片编辑页（`/corwork/messages` 内嵌入口）
+- [ ] 消息页：加载更多历史消息（上拉分页）
+
+#### Android 端 — 已完成
+- [x] 数据层：`ApiService.kt`（Retrofit 接口）/ `ApiClient.kt`（动态 baseUrl，`buildService(url)`）/ `AuthDataStore.kt`（DataStore 存 token/userId/username/serverUrl）/ `AuthModels.kt` / `CollabModels.kt`
+- [x] UI 主题：`Theme.kt`（深色，primary `#6366F1`）/ `Type.kt`
+- [x] 登录页：`LoginViewModel.kt`（登录/注册 + 错误处理）/ `LoginScreen.kt`（支持切换，含可折叠服务器地址输入框）
+- [x] 主框架：`MainScreen.kt`（BottomNav：消息/项目/协作看板）
+- [x] 消息列表：`MessagesScreen.kt`（会话列表 + WebSocket 实时刷新）
+- [x] 聊天页：`ChatScreen.kt`（乐观更新 + WebSocket 实时接收）
+- [x] 占位页：`ProjectsScreen.kt` / `BoardScreen.kt`
+- [x] 入口路由：`MainActivity.kt`（检测 token → 路由到登录页或主页，`onLogout` 清除 DataStore）
+- [x] WebSocket 长连接：`CollabWebSocket.kt`（OkHttp WS + `SharedFlow<WsEvent>`，`pingInterval=20s` 保活，`DisposableEffect` 自动管理生命周期）
+- [x] 服务器地址动态配置：登录页可折叠输入框，地址保存到 DataStore，重启 App 自动回填，无需重新打包
+
+#### Android 端 — 待完成
+- [ ] 项目 Tab：接入后端项目接口
+- [ ] 协作看板 Tab：接入后端看板接口
+- [ ] 好友申请：Android 端接收 `friend_request` WebSocket 事件并展示通知
 
 ### Phase 4 任务清单
 
@@ -344,21 +505,22 @@
 
 ## 后续规划
 
-### Phase 4（当前）— MCP/Skill 建设 & 多模态 Chat（已完成，收尾待做）
+### Phase 4 — MCP/Skill 建设 & 多模态 Chat ✅（已完成）
 - [x] Skills 看板：后端 CRUD + SQLite 持久化 + 前端仓库风格预览弹窗
 - [x] 多模态 Chat：图片上传 + 粘贴截图 + 三协议格式转换
+- [x] 文档上传解析：`POST /v1/documents/upload` 接口 + `document_store.py` 内存分块存储 + `read_document` 内置工具
+- [x] `_read_tool_source()` 联动：内置 Skill 展示代码从真实 `.py` 文件动态读取，消除双份维护
 - [ ] Skills 看板编辑功能（当前只有新建和删除，缺少编辑已有 Skill 文件的入口）
-- [ ] 文档上传解析（`.pdf/.docx` 读取内容作为 Agent 上下文，当前只存文件名）
 - [ ] 存档系统：支持从历史存档恢复研讨会模式（当前恢复时 mode 固定为 "graph"）
 - [ ] Think Tank 导出报告功能（当前按钮 disabled 占位）
 
-### Phase 5 — CorWork 协作交流（蜂巢）
-- 多 Agent 群聊协作空间（基于 Agent 库）
-- 需求拆解与任务分配流程
-- 实时通信（WebSocket）
+### Phase 5（当前）— Cor-AiWorker 协作建设（前端 + 后端 + 客户端）
+- Web 端协作区竖边栏：消息 Tab（联系人 + Agent 代理对话）+ 项目 Tab（看板 + 审查）+ 协作看板占位
+- 后端：联系人/消息/项目数据模型 + WebSocket 实时通信 + Agent 代理转发接口
+- Android 端（Jetpack Compose）：消息列表 + Agent 对话 + 项目看板 + WebSocket 实时消息
 
 ### Phase 6 — WorkBench 工作台进阶
-- 协作进度看板
+- 协作进度看板（Phase 5 协作看板 Tab 的完整实现）
 - API 用量监控
 - 定时任务配置与管理
 
@@ -385,6 +547,21 @@
 | 2026-06-15 | 种子数据同步 | 每次启动按名称 upsert 文件内容，不改元数据（幂等） | 避免重复创建，同时保证代码更新后自动同步到 DB |
 | 2026-06-15 | 多模态消息格式 | 前端统一用 OpenAI vision 格式，后端按 provider 转换为各协议格式 | 前端无需感知协议差异，转换逻辑集中在 chat_service |
 | 2026-06-15 | 粘贴截图方案 | ClipboardEvent.items 过滤 image/*，FileReader 转 base64 | 与文件上传走同一套附件流程，零额外状态管理 |
+| 2026-06-15 | 文档解析方案 | 内存分块存储（DocumentStore），每块 1500 字，Agent 按需调用 read_document 工具读取 | 避免一次性注入 system prompt 导致 token 超限；TTL 2h 自动清理，无磁盘 IO |
+| 2026-06-15 | 内置 Skill 代码展示 | _read_tool_source() 运行时读取真实 .py 文件，替代硬编码字符串 | 单一来源，改工具代码后展示自动跟随，无需手动同步两份副本 |
+| 2026-06-16 | Android 客户端 | Jetpack Compose，由用户自行搭建项目骨架，后续接入后端 WebSocket + Agent 接口 | Phase 5 协作功能需要移动端支持，Web 端先行，Android 同步跟进 |
+| 2026-06-16 | 协作核心设计 | Agent 作为代理人：用户先和对方 Agent 对话确认表达，Agent 再转发给真人 | 解决人与人直接沟通的心理负担和切入口问题 |
+| 2026-06-16 | 数据库架构 | 保持 SQLite，新增 corwork.db（WAL 模式）作为平台数据库，与 agent_logs.db/skills.db 并列 | 本机部署，并发量小，SQLite WAL 够用；单文件备份方便；Android 通过 REST API 接入，不直接碰 DB |
+| 2026-06-16 | 数据归属策略 | 协作数据（用户/消息/项目）→ 后端；个人数据（聊天记录/API Key/文档）→ 本地 | 不做全面迁移，新功能从一开始走后端，老功能保持现状 |
+| 2026-06-16 | Agent 回复模式 | local 模式：本机 LLM 模拟对方 Agent 回复；platform 模式：预留 endpoint_url 接口 | 现阶段无平台级 LLM 管理，local 模式先跑通产品逻辑，platform 接口留好入口 |
+| 2026-06-16 | 登录方案 | 自建用户系统（bcrypt + JWT），不做 OAuth | 本机部署，自控，半天实现；30 天 Token 有效期，移动端友好 |
+| 2026-06-16 | 前端布局 | AppShell 组件判断路径，/login 全屏无侧边栏，其他路径正常渲染 | 避免 Next.js Server Component 不能用 usePathname 的问题 |
+| 2026-06-16 | 好友申请状态机 | `UNIQUE(from_id, to_id)`，被拒/取消后可重新申请，同意后双向写 contacts | 防止重复申请，同时保留重试能力 |
+| 2026-06-16 | 多 Tab 登录隔离 | `localStorage` → `sessionStorage`（tab 级别隔离） | 同域 localStorage 共享导致多账号登录互相覆盖 |
+| 2026-06-16 | Android 服务器地址 | 登录页可折叠输入框 + DataStore 持久化，无需重新打包 | 局域网 IP 随网络环境变化，写死不可行；扫码/mDNS 方案复杂度高，输入框最实用 |
+| 2026-06-16 | Android WebSocket | OkHttp 原生 WebSocket API，无额外依赖，`pingInterval=20s` 保活 | OkHttp 已是 Retrofit 依赖，零增量；`DisposableEffect` 管理生命周期，页面销毁自动断开 |
+| 2026-06-16 | Android 消息实时性 | ChatScreen 收到 WS `new_message` 直接追加（去重），MessagesScreen 收到后重新拉取会话列表 | ChatScreen 追加避免重复请求；MessagesScreen 重拉保证未读数/时间准确 |
+| 2026-06-16 | Android 乐观更新 | 发送时先本地追加临时消息（`opt-` 前缀 id），服务端返回后替换；失败则移除 | 消除网络延迟感，失败回滚保证一致性 |
 
 ---
 
@@ -464,3 +641,43 @@
 | 2026-06-15 | Phase 4 | 多模态 Schema：TextPart / ImageUrlPart Pydantic 模型，MessageContent 支持 str | list，chat_service 三协议格式转换 | - |
 | 2026-06-15 | Phase 4 | 多模态前端：use-chat-stream buildUserContent() 转 OpenAI vision 格式，chat/page.tsx 传 attachments，MessageList 渲染缩略图 | - |
 | 2026-06-15 | Phase 4 | 粘贴截图：chat-input.tsx handlePaste 处理器，ClipboardEvent 过滤 image/*，FileReader 转 base64，挂载到 textarea onPaste | - |
+| 2026-06-15 | Phase 4 | 文档上传解析：document_store.py（内存分块，TTL 2h，支持 PDF/DOCX/TXT/MD）+ POST /v1/documents/upload 接口 + read_document 内置工具（分块读取，返回 total_chunks）+ 前端附件卡片（解析中→N块·XKB）+ system prompt 注入文件信息 | - |
+| 2026-06-15 | Phase 4 | 内置 Skill 代码联动：_read_tool_source() 从真实 .py 文件动态读取源码，_BUILTIN_SKILLS 展示代码不再硬编码，改一处自动同步，消除双份维护负债 | - |
+| 2026-06-15 | Phase 4 | ReadDocument 加入 Skills 看板：_BUILTIN_SKILLS 新增 ReadDocument 种子数据（README.md + document_store.py + read_document.py），seed_builtin_skills() 启动时自动同步 | - |
+| 2026-06-16 | Phase 5A | 架构决策：保持 SQLite，新增 corwork.db（WAL 模式）；数据归属策略（协作→后端，个人→本地）；Agent 回复 local/platform 双模式 | - |
+| 2026-06-16 | Phase 5A | 后端用户系统：corwork_db.py（5 张表）+ user_service.py（bcrypt+JWT）+ core/auth.py（依赖注入）+ api/v1/auth.py（注册/登录/me） | - |
+| 2026-06-16 | Phase 5A | 后端协作 API：api/v1/collab.py（Agent 名片/联系人/消息/会话列表/用户搜索/WebSocket）+ _WSManager 连接池 + _agent_auto_reply 模拟回复 | - |
+| 2026-06-16 | Phase 5A | 后端管理面板：api/v1/admin.py（系统统计 JSON + HTML 管理界面），根路径重定向到管理面板 | - |
+| 2026-06-16 | Phase 5A | 前端认证：lib/api/client.ts（统一 API 客户端）+ contexts/auth-context.tsx（AuthProvider）+ app/login/page.tsx（登录/注册页）+ components/layout/app-shell.tsx（路径判断跳过侧边栏） | - |
+| 2026-06-16 | Phase 5A | 前端消息页：app/corwork/messages/page.tsx（会话列表+添加联系人弹窗）+ app/corwork/messages/[peerId]/page.tsx（对话页+乐观更新+WebSocket+Agent 紫色标识） | - |
+| 2026-06-16 | Phase 5A | 竖边栏重构：CorworkSidebar 移到全局 layout，usePathname 判断路径，收起时拉手贴主侧边栏右边缘；nav-config 协作分组改为「交流协作」单入口；nav-group 激活判断改为前缀匹配+最长优先 | - |
+| 2026-06-16 | Phase 5B | 消息页重构：左右分栏布局，messages/layout.tsx 容器 + ConversationList 组件，聊天页去掉返回按钮 | - |
+| 2026-06-16 | Phase 5B | 好友申请后端：friend_requests 表（pending/accepted/rejected/cancelled）+ 6 个接口 + WebSocket 推送 friend_request/friend_request_result 事件 | - |
+| 2026-06-16 | Phase 5B | 好友申请前端：FriendRequestInbox 组件 + Bell 角标 + 添加好友改为发申请流程 + WS 监听实时更新角标 | - |
+| 2026-06-16 | Phase 5B | 侧边栏用户头像：移到顶部，点击弹出用户卡片（含退出登录），去掉独立退出按钮 | - |
+| 2026-06-16 | Phase 5B | Bug 修复：旧 corwork.db 无 friend_requests 表导致 404，init_db() 加 sqlite_master 迁移检测自动补建 | - |
+| 2026-06-16 | Phase 5B | Bug 修复：多 Tab 登录态覆盖，localStorage 改 sessionStorage，tab 级别隔离 | - |
+| 2026-06-16 | Phase 5B | Bug 修复：CORS allow_origins=["*"] 与 allow_credentials=True 冲突，改 allow_origin_regex=".*" + allow_credentials=False | - |
+| 2026-06-16 | Phase 5C | Android 数据层：ApiService.kt（Retrofit 接口）/ ApiClient.kt（buildService 动态 baseUrl）/ AuthDataStore.kt（DataStore，新增 serverUrl 字段）/ AuthModels.kt / CollabModels.kt | - |
+| 2026-06-16 | Phase 5C | Android UI 主题：Theme.kt（深色，primary #6366F1）/ Type.kt | - |
+| 2026-06-16 | Phase 5C | Android 登录页：LoginViewModel.kt（登录/注册 + 错误分类）/ LoginScreen.kt（登录/注册切换 + 可折叠服务器地址输入框，启动回填上次地址） | - |
+| 2026-06-16 | Phase 5C | Android 主框架：MainScreen.kt（BottomNav 消息/项目/协作看板）/ ProjectsScreen.kt / BoardScreen.kt 占位 | - |
+| 2026-06-16 | Phase 5C | Android 消息列表：MessagesScreen.kt（会话列表 + 未读角标 + WebSocket 收到新消息自动刷新） | - |
+| 2026-06-16 | Phase 5C | Android 聊天页：ChatScreen.kt（历史消息加载 + 乐观更新发送 + WebSocket 实时接收对方消息） | - |
+| 2026-06-16 | Phase 5C | Android 入口路由：MainActivity.kt（AppRoot 监听 DataStore tokenFlow/userIdFlow/serverUrlFlow，自动路由登录页或主页，onLogout 清除 DataStore） | - |
+| 2026-06-16 | Phase 5C | Android WebSocket：CollabWebSocket.kt（OkHttp WS + SharedFlow<WsEvent>，pingInterval=20s，DisposableEffect 管理生命周期，页面销毁自动断开） | - |
+| 2026-06-16 | Phase 5C | Android 包名清理：旧包 com.example.coraiworkerandr 下所有文件删除，统一使用 com.coraiworker.android | - |
+| 2026-06-17 | Phase 6-1a | 后端：agent_memories 表（迁移检测）+ messages.forward_from 字段 + 记忆 CRUD 接口（GET/POST/PUT/DELETE）+ 获取对方 ComMemory 接口 | - |
+| 2026-06-17 | Phase 6-1a | 前端：会话列表头像点击弹出联系人小卡片（发消息 / 让 Agent 帮我起草），跳转 /corwork/messages/${peerId}/agent | - |
+| 2026-06-17 | Phase 6-1a | 前端：Agent 起草页重构（useAvailableModels 读取真实 API Key，System Prompt 注入对方 ComMemory，快捷提示按钮，模型选择器） | - |
+| 2026-06-17 | Phase 6-1b | 后端：forward_message MCP 工具（agent_forward 消息类型 + forward_from 字段 + WebSocket 推送），注册到全局 tool_registry | - |
+| 2026-06-17 | Phase 6-1b | 前端：agent_forward 消息特殊气泡（紫色渐变 + Sparkles 头像 + 「TA 的 Agent 转发」标签） | - |
+| 2026-06-17 | Phase 6-1c | 前端：MemoryDrawer 组件（右侧抽屉，按 soul/memory/user/common 分组，新建/编辑/删除，内联表单，二次确认删除） | - |
+| 2026-06-17 | Phase 6-1c | 前端：消息对话页顶部栏新增「记忆」按钮（绿色 Brain 图标），点击打开 MemoryDrawer | - |
+| 2026-06-17 | Phase 6-1c | 后端：save_memory MCP 工具（写入 agent_memories 表，支持 soul/memory/user/common 四种类型），注册到全局 tool_registry | - |
+| 2026-06-17 | Phase 6-1c | 后端：skill_store 新增 ForwardMessage / SaveMemory 协作 Skill 种子数据（collab 类型），seed_builtin_skills 查询条件扩展为 IN ('builtin','collab') | - |
+| 2026-06-17 | Phase 6-1c | 后端：skill_runner.load_enabled_skills 跳过 collab 类型（与 builtin 同等处理，避免沙箱 exec 报 __import__ not found） | - |
+| 2026-06-17 | Phase 6-1c | 后端：ChatRequest 新增 tool_names 字段（null=全部，[]=禁用，list=白名单），agent_service 按此过滤工具列表 | - |
+| 2026-06-17 | Phase 6-1c | 前端：use-enabled-skill-tools.ts Hook，从后端拉取已启用 Skill，排除 collab 类型，返回工具名白名单 | - |
+| 2026-06-17 | Phase 6-1c | 前端：Chat 页面发请求时传 tool_names（只包含 Skill 中心启用的普通工具，协作工具不暴露给普通 Chat） | - |
+| 2026-06-17 | Phase 6-1c | 前端：Skill 看板新增 collab 类型支持（绿色主题 + Users 图标 + 「协作」徽章 + 不可删除） | - |

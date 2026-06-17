@@ -1,13 +1,20 @@
 "use client";
 
 import { useState, useRef, useCallback, useEffect } from "react";
-import { Paperclip, Plus, Send, Image, FileText, X } from "lucide-react";
+import { Paperclip, Plus, Send, Image, FileText, X, Loader2 } from "lucide-react";
 
 interface Attachment {
   id: string;
   name: string;
   type: "image" | "document";
-  preview?: string;
+  preview?: string;       // 图片：base64 data URL
+  // 文档专属字段（上传解析后填充）
+  fileId?: string;        // 后端返回的 file_id
+  totalChunks?: number;   // 分块数
+  docPreview?: string;    // 文档前 200 字预览
+  size?: number;          // 原始文件字节数
+  uploading?: boolean;    // 正在上传解析中
+  uploadError?: string;   // 上传失败原因
 }
 
 interface ChatInputProps {
@@ -21,6 +28,14 @@ const LINE_HEIGHT = 22.4; // 14px * 1.6
 const PADDING_V   = 16;   // padding-top 12 + padding-bottom 4
 const MIN_HEIGHT  = Math.round(LINE_HEIGHT + PADDING_V);
 const MAX_HEIGHT  = Math.round(LINE_HEIGHT * 6 + PADDING_V);
+
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? "";
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
 
 export function ChatInput({
   onSend,
@@ -60,6 +75,8 @@ export function ChatInput({
   const handleSend = useCallback(() => {
     const trimmed = text.trim();
     if (!trimmed && attachments.length === 0) return;
+    // 有文档还在上传中，不允许发送
+    if (attachments.some((a) => a.uploading)) return;
     onSend(trimmed, attachments);
     setText("");
     setAttachments([]);
@@ -85,13 +102,53 @@ export function ChatInput({
     setShowAttachMenu(false);
   };
 
+  // 文档上传：先占位（uploading=true），再调后端解析接口，成功后填充 fileId
   const handleDocUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? []);
     files.forEach((file) => {
+      const tempId = `doc-${Date.now()}-${Math.random()}`;
+      // 先加入占位附件，显示 loading 状态
       setAttachments((prev) => [
         ...prev,
-        { id: `doc-${Date.now()}-${Math.random()}`, name: file.name, type: "document" },
+        { id: tempId, name: file.name, type: "document", size: file.size, uploading: true },
       ]);
+
+      // 调后端解析接口
+      if (!BACKEND_URL) {
+        // 无后端时降级：仅存文件名（不支持 read_document 工具）
+        setAttachments((prev) =>
+          prev.map((a) => a.id === tempId ? { ...a, uploading: false } : a)
+        );
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append("file", file);
+
+      fetch(`${BACKEND_URL}/v1/documents/upload`, { method: "POST", body: formData })
+        .then(async (res) => {
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({ detail: "上传失败" }));
+            throw new Error(err.detail ?? "上传失败");
+          }
+          return res.json();
+        })
+        .then((data: { file_id: string; total_chunks: number; preview: string; size: number }) => {
+          setAttachments((prev) =>
+            prev.map((a) =>
+              a.id === tempId
+                ? { ...a, uploading: false, fileId: data.file_id, totalChunks: data.total_chunks, docPreview: data.preview, size: data.size }
+                : a
+            )
+          );
+        })
+        .catch((err: Error) => {
+          setAttachments((prev) =>
+            prev.map((a) =>
+              a.id === tempId ? { ...a, uploading: false, uploadError: err.message } : a
+            )
+          );
+        });
     });
     e.target.value = "";
     setShowAttachMenu(false);
@@ -108,7 +165,6 @@ export function ChatInput({
     const imageItems = items.filter((item) => item.type.startsWith("image/"));
     if (imageItems.length === 0) return;
 
-    // 有图片时阻止默认粘贴行为（避免粘贴乱码）
     e.preventDefault();
     imageItems.forEach((item) => {
       const file = item.getAsFile();
@@ -130,7 +186,8 @@ export function ChatInput({
     });
   };
 
-  const canSend = (text.trim().length > 0 || attachments.length > 0) && !disabled;
+  const hasUploading = attachments.some((a) => a.uploading);
+  const canSend = (text.trim().length > 0 || attachments.length > 0) && !disabled && !hasUploading;
 
   return (
     <div
@@ -150,19 +207,39 @@ export function ChatInput({
               style={{
                 position: "relative", display: "flex", alignItems: "center", gap: "6px",
                 padding: att.type === "image" ? "0" : "6px 10px",
-                backgroundColor: "var(--card-bg)", border: "1px solid var(--border-color)",
+                backgroundColor: att.uploadError ? "rgba(239,68,68,0.08)" : "var(--card-bg)",
+                border: `1px solid ${att.uploadError ? "rgba(239,68,68,0.3)" : "var(--border-color)"}`,
                 borderRadius: "8px", overflow: "hidden",
+                maxWidth: "200px",
               }}
             >
               {att.type === "image" && att.preview ? (
                 <img src={att.preview} alt={att.name} style={{ width: "56px", height: "56px", objectFit: "cover", display: "block" }} />
               ) : (
-                <>
-                  <FileText size={14} style={{ color: "var(--text-secondary)", flexShrink: 0 }} />
-                  <span style={{ fontSize: "12px", color: "var(--text-secondary)", maxWidth: "120px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {att.name}
-                  </span>
-                </>
+                <div style={{ display: "flex", alignItems: "center", gap: "6px", minWidth: 0 }}>
+                  {att.uploading ? (
+                    <Loader2 size={14} style={{ color: "var(--accent-blue)", flexShrink: 0, animation: "spin 1s linear infinite" }} />
+                  ) : att.uploadError ? (
+                    <FileText size={14} style={{ color: "#ef4444", flexShrink: 0 }} />
+                  ) : (
+                    <FileText size={14} style={{ color: "var(--accent-blue)", flexShrink: 0 }} />
+                  )}
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: "12px", color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "120px" }}>
+                      {att.name}
+                    </div>
+                    <div style={{ fontSize: "10px", color: att.uploadError ? "#ef4444" : "var(--text-muted)", marginTop: "1px" }}>
+                      {att.uploading
+                        ? "解析中..."
+                        : att.uploadError
+                          ? att.uploadError
+                          : att.totalChunks
+                            ? `${att.totalChunks} 块 · ${formatBytes(att.size ?? 0)}`
+                            : formatBytes(att.size ?? 0)
+                      }
+                    </div>
+                  </div>
+                </div>
               )}
               <button
                 onClick={() => removeAttachment(att.id)}
@@ -172,6 +249,7 @@ export function ChatInput({
                   border: "none", backgroundColor: "rgba(0,0,0,0.6)",
                   color: "#fff", display: "flex", alignItems: "center",
                   justifyContent: "center", cursor: "pointer", outline: "none", padding: 0,
+                  flexShrink: 0,
                 }}
               >
                 <X size={10} />
@@ -181,7 +259,7 @@ export function ChatInput({
         </div>
       )}
 
-      {/* 输入框主体（撑满宽度） */}
+      {/* 输入框主体 */}
       <div
         style={{
           display: "flex",
@@ -294,7 +372,7 @@ export function ChatInput({
           <button
             onClick={handleSend}
             disabled={!canSend}
-            title="发送 (Enter)"
+            title={hasUploading ? "文档解析中，请稍候..." : "发送 (Enter)"}
             style={{
               display: "flex", alignItems: "center", justifyContent: "center",
               width: "30px", height: "30px", borderRadius: "7px",

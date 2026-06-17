@@ -3,19 +3,30 @@
 import { usePathname } from "next/navigation";
 import { Sun, Moon, Bell, Settings, ChevronRight } from "lucide-react";
 import { useState, useEffect } from "react";
-import { navGroups } from "@/components/sidebar/nav-config";
+import { navGroups, type NavItem } from "@/components/sidebar/nav-config";
 import { useTheme } from "@/contexts/theme-context";
 
 function useBreadcrumb() {
   const pathname = usePathname();
+
+  // 收集所有匹配项（精确 or 前缀），取 href 最长的那个（最精确）
+  let bestLen = -1;
+  let result: { group: string | null; page: string | null; Icon: NavItem["icon"] | null } = {
+    group: null, page: null, Icon: null,
+  };
+
   for (const group of navGroups) {
     for (const item of group.items) {
-      if (item.href === pathname) {
-        return { group: group.label, page: item.label, Icon: item.icon };
+      const exact = pathname === item.href;
+      const prefix = pathname.startsWith(item.href + "/");
+      if ((exact || prefix) && item.href.length > bestLen) {
+        bestLen = item.href.length;
+        result = { group: group.label, page: item.label, Icon: item.icon };
       }
     }
   }
-  return { group: null, page: null, Icon: null };
+
+  return result;
 }
 
 // 苹果风格 Sun/Moon 滑动 Toggle（接入真实主题）

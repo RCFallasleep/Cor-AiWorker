@@ -21,9 +21,12 @@ services:
       - "8000:8000"
     environment:
       - SEARXNG_BASE_URL=http://searxng:8080
-      - ALLOWED_ORIGINS=["http://localhost:3000","http://127.0.0.1:3000"]
+      # 开发阶段放开所有来源，手机/模拟器均可访问
+      # 生产环境改为具体域名
+      - ALLOWED_ORIGINS=["http://localhost:3000","http://127.0.0.1:3000","http://10.0.2.2:3000","*"]
       - DEBUG=false
       - LOG_DB_PATH=/data/agent_logs.db
+      - CORWORK_DB_PATH=/data/corwork.db
     volumes:
       # 持久化 SQLite 日志数据库
       - ./data:/data

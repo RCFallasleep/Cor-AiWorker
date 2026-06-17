@@ -6,10 +6,12 @@ import {
   RefreshCw, X, Search as SearchIcon, BrainCircuit, PenLine, ShieldCheck,
   Zap, BookOpen, Globe, Code2, FileText, Database, ChevronRight,
   Sparkles, Check, Loader2, ExternalLink, AlertCircle, Key, Trash2, Pencil, Save,
+  Brain, User, ChevronUp,
 } from "lucide-react";
 import { agentRepo } from "@/lib/repositories/agent-repository";
 import type { AgentRow, AgentSkillScores } from "@/lib/db/idb";
 import { apiKeyRepo, type ApiKeyRecord } from "@/lib/repositories/api-key-repository";
+import { memoriesApi, type AgentMemory } from "@/lib/api/client";
 
 // ── LiveBench API ─────────────────────────────────────────────────────────────
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:8000";
@@ -418,7 +420,7 @@ function AgentCard({ agent, selected, onClick, onDelete }: {
 }
 
 // ── 详情面板 ──────────────────────────────────────────────────────────────────
-type DetailTab = "identity" | "ability" | "record" | "knowledge";
+type DetailTab = "identity" | "ability" | "record" | "knowledge" | "memory";
 
 function DetailPanel({
   agent,
@@ -493,6 +495,7 @@ function DetailPanel({
     { key: "ability",    label: "能力" },
     { key: "record",     label: "战绩" },
     { key: "knowledge",  label: "知识库" },
+    { key: "memory",     label: "记忆" },
   ];
 
   return (
@@ -558,7 +561,7 @@ function DetailPanel({
           </div>
           {/* 编辑 / 关闭按钮 */}
           <div style={{ display: "flex", gap: "4px", flexShrink: 0 }}>
-            {tab === "identity" && !editing && (
+            {tab === "identity" && !editing && tab !== "memory" && (
               <button
                 onClick={() => setEditing(true)}
                 title="编辑"
@@ -587,8 +590,8 @@ function DetailPanel({
         <div style={{ display: "flex", borderBottom: "1px solid var(--border-subtle)" }}>
           {tabs.map(t => (
             <button key={t.key} onClick={() => setTab(t.key)} style={{
-              flex: 1, padding: "8px 0", border: "none", background: "none",
-              fontSize: "13px", fontWeight: tab === t.key ? 600 : 400,
+              flex: 1, padding: "7px 0", border: "none", background: "none",
+              fontSize: "12px", fontWeight: tab === t.key ? 600 : 400,
               color: tab === t.key ? "var(--text-primary)" : "var(--text-muted)",
               cursor: "pointer", outline: "none",
               borderBottom: `2px solid ${tab === t.key ? "var(--accent-blue)" : "transparent"}`,
@@ -903,6 +906,412 @@ function DetailPanel({
             </button>
           </div>
         )}
+
+        {/* ── 记忆 Tab ── */}
+        {tab === "memory" && <MemoryTabContent />}
+      </div>
+    </div>
+  );
+}
+
+// ── 记忆 Tab 内容 ─────────────────────────────────────────────────────────────
+
+type MemoryType = "soul" | "memory" | "user" | "common";
+
+interface MemGroupConfig {
+  type: MemoryType;
+  label: string;
+  desc: string;
+  color: string;
+  bgColor: string;
+  borderColor: string;
+  icon: React.ReactNode;
+}
+
+const MEM_GROUPS: MemGroupConfig[] = [
+  {
+    type: "common",
+    label: "公共记忆",
+    desc: "对外可见，对方 Agent 起草消息时会自动注入",
+    color: "#10b981",
+    bgColor: "rgba(16,185,129,0.08)",
+    borderColor: "rgba(16,185,129,0.25)",
+    icon: <Globe size={12} />,
+  },
+  {
+    type: "soul",
+    label: "灵魂设定",
+    desc: "Agent 的个性、价值观与核心身份",
+    color: "#a78bfa",
+    bgColor: "rgba(167,139,250,0.08)",
+    borderColor: "rgba(167,139,250,0.25)",
+    icon: <Sparkles size={12} />,
+  },
+  {
+    type: "memory",
+    label: "工作记忆",
+    desc: "Agent 积累的经验、偏好与工作方式",
+    color: "#60a5fa",
+    bgColor: "rgba(96,165,250,0.08)",
+    borderColor: "rgba(96,165,250,0.25)",
+    icon: <Brain size={12} />,
+  },
+  {
+    type: "user",
+    label: "用户记忆",
+    desc: "关于你自己的背景、习惯与偏好",
+    color: "#f59e0b",
+    bgColor: "rgba(245,158,11,0.08)",
+    borderColor: "rgba(245,158,11,0.25)",
+    icon: <User size={12} />,
+  },
+];
+
+function MemoryTabContent() {
+  const [memories, setMemories] = useState<Record<string, AgentMemory[]>>({});
+  const [loading, setLoading] = useState(false);
+  const [collapsed, setCollapsed] = useState<Record<MemoryType, boolean>>({
+    soul: false, memory: false, user: false, common: false,
+  });
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingType, setEditingType] = useState<MemoryType>("common");
+  const [editTitle, setEditTitle] = useState("");
+  const [editContent, setEditContent] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [creatingType, setCreatingType] = useState<MemoryType | null>(null);
+
+  const loadMemories = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await memoriesApi.getMyMemories();
+      setMemories(data);
+    } catch (e) {
+      console.error("加载记忆失败:", e);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { loadMemories(); }, [loadMemories]);
+
+  const startEdit = (mem: AgentMemory) => {
+    setEditingId(mem.id);
+    setEditingType(mem.type);
+    setEditTitle(mem.title || "");
+    setEditContent(mem.content);
+    setCreatingType(null);
+  };
+
+  const startCreate = (type: MemoryType) => {
+    setCreatingType(type);
+    setEditingId(null);
+    setEditingType(type);
+    setEditTitle("");
+    setEditContent("");
+    setCollapsed(prev => ({ ...prev, [type]: false }));
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+    setCreatingType(null);
+    setEditTitle("");
+    setEditContent("");
+  };
+
+  const handleSave = async () => {
+    if (!editContent.trim()) return;
+    setSaving(true);
+    try {
+      if (editingId) {
+        const updated = await memoriesApi.updateMemory(editingId, {
+          title: editTitle.trim() || undefined,
+          content: editContent.trim(),
+        });
+        setMemories(prev => {
+          const group = [...(prev[editingType] || [])];
+          const idx = group.findIndex(m => m.id === editingId);
+          if (idx >= 0) group[idx] = updated;
+          return { ...prev, [editingType]: group };
+        });
+      } else {
+        const created = await memoriesApi.createMemory({
+          type: editingType,
+          title: editTitle.trim() || undefined,
+          content: editContent.trim(),
+        });
+        setMemories(prev => ({
+          ...prev,
+          [editingType]: [...(prev[editingType] || []), created],
+        }));
+      }
+      cancelEdit();
+    } catch (e) {
+      console.error("保存记忆失败:", e);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async (mem: AgentMemory) => {
+    setDeletingId(mem.id);
+    try {
+      await memoriesApi.deleteMemory(mem.id);
+      setMemories(prev => ({
+        ...prev,
+        [mem.type]: (prev[mem.type] || []).filter(m => m.id !== mem.id),
+      }));
+    } catch (e) {
+      console.error("删除记忆失败:", e);
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div style={{ textAlign: "center", padding: "40px", color: "var(--text-muted)", fontSize: "13px" }}>
+        加载中...
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+      {MEM_GROUPS.map(group => {
+        const items = memories[group.type] || [];
+        const isCollapsed = collapsed[group.type];
+        const isCreating = creatingType === group.type;
+
+        return (
+          <div key={group.type}>
+            {/* 分组标题 */}
+            <div
+              style={{
+                display: "flex", alignItems: "center", justifyContent: "space-between",
+                padding: "5px 6px", borderRadius: "6px", cursor: "pointer", userSelect: "none",
+              }}
+              onClick={() => setCollapsed(prev => ({ ...prev, [group.type]: !prev[group.type] }))}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.backgroundColor = "var(--sidebar-hover)"; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.backgroundColor = "transparent"; }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
+                <span style={{ color: group.color }}>{group.icon}</span>
+                <span style={{ fontSize: "11px", fontWeight: 600, color: "var(--text-primary)" }}>{group.label}</span>
+                <span style={{
+                  fontSize: "10px", padding: "1px 5px", borderRadius: "8px",
+                  backgroundColor: group.bgColor, color: group.color, border: `1px solid ${group.borderColor}`,
+                }}>
+                  {items.length}
+                </span>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: "2px" }}>
+                <button
+                  onClick={e => { e.stopPropagation(); startCreate(group.type); }}
+                  title={`新建${group.label}`}
+                  style={{
+                    width: "20px", height: "20px", borderRadius: "4px", border: "none",
+                    cursor: "pointer", backgroundColor: "transparent", color: group.color,
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                  }}
+                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.backgroundColor = group.bgColor; }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.backgroundColor = "transparent"; }}
+                >
+                  <Plus size={11} />
+                </button>
+                <span style={{ color: "var(--text-muted)" }}>
+                  {isCollapsed ? <ChevronRight size={12} /> : <ChevronUp size={12} />}
+                </span>
+              </div>
+            </div>
+
+            {/* 分组描述 */}
+            {!isCollapsed && (
+              <div style={{ fontSize: "10px", color: "var(--text-muted)", padding: "0 6px 4px", lineHeight: 1.4 }}>
+                {group.desc}
+              </div>
+            )}
+
+            {/* 新建表单 */}
+            {!isCollapsed && isCreating && (
+              <MemInlineForm
+                title={editTitle} content={editContent} saving={saving}
+                groupColor={group.color}
+                onTitleChange={setEditTitle} onContentChange={setEditContent}
+                onSave={handleSave} onCancel={cancelEdit} isNew
+              />
+            )}
+
+            {/* 条目列表 */}
+            {!isCollapsed && items.map(mem => {
+              if (editingId === mem.id) {
+                return (
+                  <MemInlineForm
+                    key={mem.id}
+                    title={editTitle} content={editContent} saving={saving}
+                    groupColor={group.color}
+                    onTitleChange={setEditTitle} onContentChange={setEditContent}
+                    onSave={handleSave} onCancel={cancelEdit}
+                  />
+                );
+              }
+              return (
+                <MemItem
+                  key={mem.id} mem={mem}
+                  groupColor={group.color} groupBg={group.bgColor} groupBorder={group.borderColor}
+                  isDeleting={deletingId === mem.id}
+                  onEdit={() => startEdit(mem)}
+                  onDelete={() => handleDelete(mem)}
+                />
+              );
+            })}
+
+            {/* 空状态 */}
+            {!isCollapsed && items.length === 0 && !isCreating && (
+              <div
+                style={{
+                  padding: "10px 6px", fontSize: "11px", color: "var(--text-muted)",
+                  textAlign: "center", borderRadius: "6px",
+                  border: `1px dashed ${group.borderColor}`, margin: "2px 0",
+                  cursor: "pointer",
+                }}
+                onClick={() => startCreate(group.type)}
+              >
+                + 添加{group.label}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function MemItem({
+  mem, groupColor, groupBg, groupBorder, isDeleting, onEdit, onDelete,
+}: {
+  mem: AgentMemory; groupColor: string; groupBg: string; groupBorder: string;
+  isDeleting: boolean; onEdit: () => void; onDelete: () => void;
+}) {
+  const [hovered, setHovered] = useState(false);
+  const [confirmDel, setConfirmDel] = useState(false);
+  const timeStr = new Date(mem.updated_at).toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" });
+
+  return (
+    <div
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => { setHovered(false); setConfirmDel(false); }}
+      style={{
+        padding: "8px 10px", borderRadius: "7px", marginBottom: "4px",
+        border: `1px solid ${hovered ? groupBorder : "var(--border-subtle)"}`,
+        backgroundColor: hovered ? groupBg : "transparent",
+        transition: "all 0.15s ease",
+      }}
+    >
+      {mem.title && (
+        <div style={{ fontSize: "10px", fontWeight: 600, color: groupColor, marginBottom: "3px" }}>
+          {mem.title}
+        </div>
+      )}
+      <div style={{ fontSize: "12px", color: "var(--text-primary)", lineHeight: 1.5, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+        {mem.content}
+      </div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: "5px" }}>
+        <span style={{ fontSize: "10px", color: "var(--text-muted)" }}>{timeStr} 更新</span>
+        {hovered && (
+          <div style={{ display: "flex", gap: "3px" }}>
+            <button onClick={onEdit} title="编辑" style={{
+              width: "20px", height: "20px", borderRadius: "4px", border: "none",
+              cursor: "pointer", backgroundColor: "transparent", color: "var(--text-muted)",
+              display: "flex", alignItems: "center", justifyContent: "center",
+            }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = groupColor; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "var(--text-muted)"; }}
+            >
+              <Pencil size={10} />
+            </button>
+            {confirmDel ? (
+              <button onClick={() => { setConfirmDel(false); onDelete(); }} disabled={isDeleting} style={{
+                height: "20px", padding: "0 6px", borderRadius: "4px", border: "none",
+                cursor: "pointer", backgroundColor: "rgba(239,68,68,0.12)", color: "#ef4444",
+                fontSize: "10px", fontWeight: 600, display: "flex", alignItems: "center", gap: "2px",
+              }}>
+                {isDeleting ? <Loader2 size={9} style={{ animation: "spin 1s linear infinite" }} /> : <Trash2 size={9} />}
+                确认
+              </button>
+            ) : (
+              <button onClick={() => setConfirmDel(true)} title="删除" style={{
+                width: "20px", height: "20px", borderRadius: "4px", border: "none",
+                cursor: "pointer", backgroundColor: "transparent", color: "var(--text-muted)",
+                display: "flex", alignItems: "center", justifyContent: "center",
+              }}
+                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#ef4444"; }}
+                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "var(--text-muted)"; }}
+              >
+                <Trash2 size={10} />
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function MemInlineForm({
+  title, content, saving, groupColor,
+  onTitleChange, onContentChange, onSave, onCancel, isNew = false,
+}: {
+  title: string; content: string; saving: boolean; groupColor: string;
+  onTitleChange: (v: string) => void; onContentChange: (v: string) => void;
+  onSave: () => void; onCancel: () => void; isNew?: boolean;
+}) {
+  return (
+    <div style={{
+      padding: "8px 10px", borderRadius: "7px", marginBottom: "4px",
+      border: `1px solid ${groupColor}`,
+      backgroundColor: "var(--sidebar-hover)",
+    }}>
+      <input
+        type="text" value={title} onChange={e => onTitleChange(e.target.value)}
+        placeholder="标题（可选）"
+        style={{
+          width: "100%", padding: "3px 0", border: "none",
+          borderBottom: "1px solid var(--border-subtle)",
+          backgroundColor: "transparent", color: "var(--text-primary)",
+          fontSize: "10px", fontWeight: 600, outline: "none", marginBottom: "6px",
+          fontFamily: "inherit", boxSizing: "border-box",
+        }}
+      />
+      <textarea
+        value={content} onChange={e => onContentChange(e.target.value)}
+        placeholder={isNew ? "输入记忆内容..." : "编辑内容..."}
+        rows={3} autoFocus
+        style={{
+          width: "100%", padding: "0", border: "none",
+          backgroundColor: "transparent", color: "var(--text-primary)",
+          fontSize: "12px", lineHeight: 1.5, outline: "none",
+          resize: "vertical", fontFamily: "inherit", minHeight: "50px",
+          boxSizing: "border-box",
+        }}
+      />
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: "5px", marginTop: "6px" }}>
+        <button onClick={onCancel} style={{
+          padding: "3px 8px", borderRadius: "5px", border: "1px solid var(--border-color)",
+          cursor: "pointer", backgroundColor: "transparent", color: "var(--text-muted)", fontSize: "11px",
+        }}>
+          取消
+        </button>
+        <button onClick={onSave} disabled={!content.trim() || saving} style={{
+          padding: "3px 8px", borderRadius: "5px", border: "none",
+          cursor: content.trim() && !saving ? "pointer" : "not-allowed",
+          backgroundColor: content.trim() && !saving ? groupColor : "var(--border-color)",
+          color: "#fff", fontSize: "11px", fontWeight: 600,
+          display: "flex", alignItems: "center", gap: "3px",
+        }}>
+          {saving ? <Loader2 size={10} style={{ animation: "spin 1s linear infinite" }} /> : <Check size={10} />}
+          {isNew ? "添加" : "保存"}
+        </button>
       </div>
     </div>
   );

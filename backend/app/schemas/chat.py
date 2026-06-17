@@ -54,6 +54,15 @@ class ChatRequest(BaseModel):
     )
     context: ClientContext | None = Field(None, description="客户端静态上下文（时区、位置等）")
     session_id: str | None = Field(None, description="前端会话 ID，用于日志关联")
+    tool_names: list[str] | None = Field(
+        None,
+        description=(
+            "工具白名单：仅启用列表中的工具名。"
+            "为 null 时使用全部已注册工具（Agent 对话场景）；"
+            "传空列表 [] 时禁用所有工具（纯 Chat 场景）；"
+            "传具体名称列表时只启用指定工具（Skill 中心场景）。"
+        ),
+    )
 
 
 # ── 组织阶段 Schemas ──────────────────────────────────────────────────────────
