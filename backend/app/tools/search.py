@@ -11,9 +11,9 @@ from app.tools.registry import ToolDefinition, tool_registry
 logger = logging.getLogger(__name__)
 
 # 每次搜索返回的最大结果条数
-_MAX_RESULTS = 5
+_MAX_RESULTS = 8
 # 注入给模型的每条结果最大字符数（提炼后）
-_MAX_SNIPPET_CHARS = 120
+_MAX_SNIPPET_CHARS = 400
 
 
 def _extract_key_sentences(text: str, max_chars: int) -> str:
@@ -137,6 +137,7 @@ web_search_tool = ToolDefinition(
         "联网搜索工具。获取实时信息、最新新闻、当前数据时使用。"
         "返回已提炼的关键信息，通常 1 次搜索即可回答问题。"
         "若结果不理想，换不同关键词再搜 1 次，之后直接基于已有信息回答。"
+        "【重要】如果本轮已经调用过 browser_read 并成功获取了页面内容，不要再调用此工具补充搜索，直接基于已读取的内容回答。"
     ),
     parameters={
         "type": "object",

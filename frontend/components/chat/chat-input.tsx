@@ -22,6 +22,10 @@ interface ChatInputProps {
   disabled?: boolean;
   supportsVision?: boolean;
   placeholder?: string;
+  /** 上下文占用百分比（0-100），用于显示预警横幅 */
+  ctxUsagePercent?: number;
+  /** 开启新对话回调（95% 预警横幅中的快捷按钮） */
+  onNewConversation?: () => void;
 }
 
 const LINE_HEIGHT = 22.4; // 14px * 1.6
@@ -42,6 +46,8 @@ export function ChatInput({
   disabled = false,
   supportsVision = true,
   placeholder = "Message Assistant (Enter to send)",
+  ctxUsagePercent = 0,
+  onNewConversation,
 }: ChatInputProps) {
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -200,6 +206,66 @@ export function ChatInput({
         borderTop: "1px solid var(--border-subtle)",
       }}
     >
+      {/* 上下文预警横幅 */}
+      {ctxUsagePercent >= 95 && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "8px",
+            padding: "7px 12px",
+            marginBottom: "8px",
+            borderRadius: "8px",
+            backgroundColor: "rgba(239,68,68,0.08)",
+            border: "1px solid rgba(239,68,68,0.25)",
+            fontSize: "12px",
+            color: "#f87171",
+          }}
+        >
+          <span style={{ flexShrink: 0 }}>🔴</span>
+          <span style={{ flex: 1 }}>上下文即将耗尽（{ctxUsagePercent}%），继续对话可能失败</span>
+          {onNewConversation && (
+            <button
+              onClick={onNewConversation}
+              style={{
+                flexShrink: 0,
+                padding: "3px 10px",
+                borderRadius: "5px",
+                border: "1px solid rgba(239,68,68,0.4)",
+                backgroundColor: "rgba(239,68,68,0.15)",
+                color: "#f87171",
+                fontSize: "11px",
+                fontWeight: 600,
+                cursor: "pointer",
+                outline: "none",
+                whiteSpace: "nowrap",
+              }}
+            >
+              开启新对话
+            </button>
+          )}
+        </div>
+      )}
+      {ctxUsagePercent >= 80 && ctxUsagePercent < 95 && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "8px",
+            padding: "7px 12px",
+            marginBottom: "8px",
+            borderRadius: "8px",
+            backgroundColor: "rgba(245,158,11,0.07)",
+            border: "1px solid rgba(245,158,11,0.22)",
+            fontSize: "12px",
+            color: "#fbbf24",
+          }}
+        >
+          <span style={{ flexShrink: 0 }}>⚠️</span>
+          <span>上下文已使用 {ctxUsagePercent}%，建议适时开启新对话</span>
+        </div>
+      )}
+
       {/* 附件预览区 */}
       {attachments.length > 0 && (
         <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "8px" }}>

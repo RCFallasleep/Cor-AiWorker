@@ -31,6 +31,16 @@ class Settings(BaseSettings):
     # ── SearXNG 联网搜索 ──────────────────────────────────────────────────────
     searxng_base_url: str | None = None
 
+    # ── Browser Service（Playwright + browser-use）────────────────────────────
+    # cor-browser 容器地址，未配置时 browser_read 工具返回友好错误提示
+    browser_service_url: str | None = None
+
+    # ── Scheduler Service（定时任务微服务）────────────────────────────────────
+    # scheduler-service 调用主后端内部接口时使用的 service token（共享密钥）
+    scheduler_service_token: str = "change-me-scheduler-token"
+    # scheduler-service 容器地址（主后端调用 scheduler-service 时使用，预留）
+    scheduler_service_url: str | None = None
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

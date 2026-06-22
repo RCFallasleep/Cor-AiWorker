@@ -10,9 +10,10 @@
  * - collab 类型（forward_message / save_memory）→ 始终排除（仅在协作 Agent 对话中使用）
  * - 后端未配置（NEXT_PUBLIC_BACKEND_URL 为空）→ 返回 null（不过滤，使用全部工具）
  *
- * 工具名映射规则（与 skill_runner.py 保持一致）：
- *   builtin Skill → 直接使用注册时的工具名（search / read_document）
- *   custom Skill  → "skill_" + snake_case(name)
+ * 工具名解析规则（优先级从高到低）：
+ *   1. Skill.tool_names 非空 → 直接使用（内置 Skill 可显式声明多个工具名）
+ *   2. builtin Skill → toSnakeCase(name)（如 WebSearch → web_search）
+ *   3. custom Skill  → "skill_" + toSnakeCase(name)
  */
 
 import { useState, useEffect } from "react";
@@ -28,14 +29,22 @@ function toSnakeCase(name: string): string {
   return s.toLowerCase();
 }
 
-/** 根据 Skill 元数据推断注册到 tool_registry 的工具名 */
-function resolveToolName(skillType: string, skillName: string): string {
+/** 根据 Skill 元数据解析出所有注册到 tool_registry 的工具名 */
+function resolveToolNames(
+  skillType: string,
+  skillName: string,
+  explicitToolNames: string[],
+): string[] {
+  // 优先使用 Skill 显式声明的工具名列表（内置 Skill 可含多个工具）
+  if (explicitToolNames.length > 0) {
+    return explicitToolNames;
+  }
   if (skillType === "builtin") {
     // 内置工具直接用小写名称（search.py → "search"，read_document.py → "read_document"）
-    return toSnakeCase(skillName);
+    return [toSnakeCase(skillName)];
   }
   // 自建 Skill：前缀 "skill_"
-  return `skill_${toSnakeCase(skillName)}`;
+  return [`skill_${toSnakeCase(skillName)}`];
 }
 
 export interface EnabledSkillToolsResult {
@@ -61,7 +70,9 @@ export function useEnabledSkillTools(): EnabledSkillToolsResult {
       .then(({ skills }) => {
         const names = skills
           .filter((s) => s.skill_type !== "collab") // 排除协作专用工具
-          .map((s) => resolveToolName(s.skill_type, s.name));
+          .flatMap((s) =>
+            resolveToolNames(s.skill_type, s.name, s.tool_names ?? [])
+          );
         setToolNames(names);
       })
       .catch(() => {

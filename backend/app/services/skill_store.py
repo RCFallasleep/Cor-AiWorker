@@ -77,6 +77,14 @@ def _init_tables(conn: sqlite3.Connection) -> None:
         );
     """)
     conn.commit()
+
+    # 幂等迁移：为 skills 表添加 tool_names 列（旧库升级）
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(skills)").fetchall()]
+    if "tool_names" not in cols:
+        conn.execute("ALTER TABLE skills ADD COLUMN tool_names TEXT NOT NULL DEFAULT '[]'")
+        conn.commit()
+        logger.info("skill_store: migrated skills table — added tool_names column")
+
     logger.info("skill_store: tables initialized | db=%s", _DB_PATH)
 
 
@@ -125,6 +133,7 @@ class Skill:
         created_at: str,
         updated_at: str,
         files: list[SkillFile] | None = None,
+        tool_names: list[str] | None = None,
     ) -> None:
         self.id = id
         self.name = name
@@ -135,6 +144,9 @@ class Skill:
         self.created_at = created_at
         self.updated_at = updated_at
         self.files: list[SkillFile] = files or []
+        # 显式声明的工具名列表（内置 Skill 可包含多个工具）
+        # 为空时由前端按命名规则推断
+        self.tool_names: list[str] = tool_names or []
 
     def to_dict(self, include_files: bool = True) -> dict:
         d: dict = {
@@ -146,6 +158,8 @@ class Skill:
             "enabled": self.enabled,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            # 显式工具名列表（空列表表示由前端按命名规则推断）
+            "tool_names": self.tool_names,
         }
         if include_files:
             d["files"] = [f.to_dict() for f in self.files]
@@ -189,6 +203,12 @@ def _lang_from_filename(filename: str) -> str:
 
 
 def _row_to_skill(row: sqlite3.Row, files: list[SkillFile]) -> Skill:
+    # tool_names 列可能在旧库中不存在（迁移前），安全读取
+    try:
+        raw_tool_names = row["tool_names"]
+        tool_names = json.loads(raw_tool_names) if raw_tool_names else []
+    except (IndexError, KeyError):
+        tool_names = []
     return Skill(
         id=row["id"],
         name=row["name"],
@@ -199,6 +219,7 @@ def _row_to_skill(row: sqlite3.Row, files: list[SkillFile]) -> Skill:
         created_at=row["created_at"],
         updated_at=row["updated_at"],
         files=files,
+        tool_names=tool_names,
     )
 
 
@@ -255,19 +276,22 @@ def create_skill(
     skill_type: str = "custom",
     tags: list[str] | None = None,
     files: list[dict] | None = None,
+    tool_names: list[str] | None = None,
 ) -> Skill:
     """创建新 Skill，可同时附带文件列表。
 
     files 格式：[{"filename": "tool.py", "content": "..."}]
+    tool_names：显式声明该 Skill 包含的工具名（内置 Skill 可含多个）
     """
     conn = _get_conn()
     now = datetime.utcnow().isoformat()
     skill_id = str(uuid.uuid4())
 
     conn.execute(
-        """INSERT INTO skills (id, name, description, skill_type, tags, enabled, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, 1, ?, ?)""",
-        (skill_id, name, description, skill_type, json.dumps(tags or []), now, now),
+        """INSERT INTO skills (id, name, description, skill_type, tags, enabled, tool_names, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)""",
+        (skill_id, name, description, skill_type, json.dumps(tags or []),
+         json.dumps(tool_names or []), now, now),
     )
 
     skill_files: list[SkillFile] = []
@@ -287,6 +311,7 @@ def create_skill(
         created_at=now,
         updated_at=now,
         files=skill_files,
+        tool_names=tool_names or [],
     )
 
 
@@ -392,6 +417,54 @@ def _upsert_file(
 # ── 内置 Skill 定义（真实代码）────────────────────────────────────────────────
 
 _BUILTIN_SKILLS: list[dict] = [
+    {
+        "name": "BrowserRead",
+        "description": "浏览器读取工具，用真实浏览器（Playwright）访问指定 URL，提取完整页面正文。支持 JS 动态渲染、反爬页面。与 WebSearch 互补：WebSearch 用于关键词搜索，BrowserRead 用于读取已知 URL 的完整内容。",
+        "skill_type": "builtin",
+        "tags": ["browser", "web", "read", "playwright"],
+        "files": [
+            {
+                "filename": "README.md",
+                "content": (
+                    "# BrowserRead Skill\n\n"
+                    "用真实浏览器读取网页完整内容，突破反爬限制，支持 JS 动态渲染页面。\n\n"
+                    "## 与 WebSearch 的区别\n\n"
+                    "| 工具 | 适用场景 | 返回内容 |\n"
+                    "|------|---------|----------|\n"
+                    "| WebSearch | 关键词搜索，找信息 | 多条摘要（120字/条） |\n"
+                    "| BrowserRead | 读取已知 URL | 完整页面正文（最多 8000 字） |\n\n"
+                    "## 功能\n\n"
+                    "- **真实浏览器**：基于 Playwright + Chromium，绕过 JS 渲染和 UA 检测\n"
+                    "- **AI 驱动提取**：browser-use Agent 理解页面结构，智能提取所需内容\n"
+                    "- **自动降级**：browser-use 失败时降级为纯 Playwright 提取\n"
+                    "- **防 SSRF**：自动拒绝内网地址访问\n\n"
+                    "## 参数\n\n"
+                    "| 参数 | 类型 | 必填 | 说明 |\n"
+                    "|------|------|------|------|\n"
+                    "| `url` | string | ✓ | 要读取的网页完整地址（http/https） |\n"
+                    "| `task` | string | ✗ | 告诉 Agent 具体提取什么，如「提取文章标题和正文」 |\n\n"
+                    "## 配置\n\n"
+                    "需要在 docker-compose.yml 中启动 cor-browser 服务：\n\n"
+                    "```yaml\n"
+                    "browser-service:\n"
+                    "  build: ./browser-service\n"
+                    "```\n\n"
+                    "并在后端环境变量中设置：\n\n"
+                    "```env\n"
+                    "BROWSER_SERVICE_URL=http://browser-service:7788\n"
+                    "```\n\n"
+                    "## 注意事项\n\n"
+                    "- 每次调用启动真实浏览器，耗时约 15-30 秒\n"
+                    "- 内部 LLM 使用用户的 API Key，会消耗额外 token\n"
+                    "- 仅在 WebSearch 无法获取完整内容时使用\n"
+                ),
+            },
+            {
+                "filename": "browser_read.py",
+                "content": _read_tool_source("browser_read.py"),
+            },
+        ],
+    },
     {
         "name": "WebSearch",
         "description": "联网搜索工具，基于 SearXNG 实例，获取实时信息、新闻、数据。智能提炼高价值内容，过滤广告噪声。",
@@ -614,6 +687,60 @@ _BUILTIN_SKILLS: list[dict] = [
             },
         ],
     },
+    {
+        "name": "Scheduler",
+        "description": "定时任务工具：通过自然语言创建定时提醒（如「30分钟后提醒我开会」），查看任务列表，取消已有任务。任务到期后 Agent 会主动发消息提醒你。",
+        "skill_type": "builtin",
+        "tags": ["scheduler", "reminder", "task", "timer"],
+        # 显式声明该 Skill 包含的所有工具名（一对多映射）
+        "tool_names": [
+            "create_scheduled_task",
+            "list_scheduled_tasks",
+            "cancel_scheduled_task",
+        ],
+        "files": [
+            {
+                "filename": "README.md",
+                "content": (
+                    "# Scheduler Skill\n\n"
+                    "定时任务工具，让 Agent 能够创建、查看和取消定时提醒。\n\n"
+                    "## 工具列表\n\n"
+                    "### create_scheduled_task(title, remind_at, description?)\n"
+                    "创建一个定时提醒任务。\n\n"
+                    "| 参数 | 类型 | 必填 | 说明 |\n"
+                    "|------|------|------|------|\n"
+                    "| `title` | string | ✓ | 任务标题，如「开会提醒」 |\n"
+                    "| `remind_at` | string | ✓ | 提醒时间，ISO 8601 格式，如 `2024-01-15T14:30:00` |\n"
+                    "| `description` | string | ✗ | 任务详细描述（可选） |\n\n"
+                    "### list_scheduled_tasks(status?)\n"
+                    "查看定时任务列表。\n\n"
+                    "| 参数 | 类型 | 必填 | 说明 |\n"
+                    "|------|------|------|------|\n"
+                    "| `status` | string | ✗ | 过滤状态：active / completed / cancelled，默认返回全部 |\n\n"
+                    "### cancel_scheduled_task(task_id)\n"
+                    "取消一个定时任务。\n\n"
+                    "| 参数 | 类型 | 必填 | 说明 |\n"
+                    "|------|------|------|------|\n"
+                    "| `task_id` | string | ✓ | 任务 ID（从 list_scheduled_tasks 获取） |\n\n"
+                    "## 使用示例\n\n"
+                    "- 「30分钟后提醒我喝水」\n"
+                    "- 「明天上午10点提醒我开周会」\n"
+                    "- 「查看我的定时任务」\n"
+                    "- 「取消那个喝水提醒」\n\n"
+                    "## 工作原理\n\n"
+                    "1. 用户在对话中说出提醒需求\n"
+                    "2. Agent 调用 `create_scheduled_task` 创建任务\n"
+                    "3. 后台 scheduler-service 轮询到期任务\n"
+                    "4. 到期后 Agent 主动发消息提醒用户\n"
+                    "5. 可在工作台「定时任务」页面查看所有任务和执行记录\n"
+                ),
+            },
+            {
+                "filename": "scheduler.py",
+                "content": _read_tool_source("scheduler.py"),
+            },
+        ],
+    },
 ]
 
 
@@ -624,7 +751,7 @@ def seed_builtin_skills() -> None:
 
     策略：
     - 若数据库为空 → 全量创建
-    - 若已有内置 Skill → 只 upsert 文件内容（保留用户对元数据的修改，但始终同步最新代码）
+    - 若已有内置 Skill → upsert 文件内容 + 同步 tool_names（保留用户对其他元数据的修改）
     """
     conn = _get_conn()
     now = datetime.utcnow().isoformat()
@@ -636,6 +763,8 @@ def seed_builtin_skills() -> None:
             (spec["name"],),
         ).fetchone()
 
+        spec_tool_names = spec.get("tool_names", [])
+
         if row is None:
             # 首次创建
             skill = create_skill(
@@ -644,15 +773,17 @@ def seed_builtin_skills() -> None:
                 skill_type=spec["skill_type"],
                 tags=spec["tags"],
                 files=spec["files"],
+                tool_names=spec_tool_names,
             )
             logger.info("seeded builtin skill | id=%s name=%s", skill.id, skill.name)
         else:
-            # 已存在：只同步文件内容（upsert），不改元数据
+            # 已存在：同步文件内容 + tool_names（始终以代码为准）
             skill_id = row["id"]
             for f in spec["files"]:
                 _upsert_file(conn, skill_id, f["filename"], f["content"], now)
             conn.execute(
-                "UPDATE skills SET updated_at=? WHERE id=?", (now, skill_id)
+                "UPDATE skills SET tool_names=?, updated_at=? WHERE id=?",
+                (json.dumps(spec_tool_names), now, skill_id),
             )
             conn.commit()
             logger.info("synced builtin skill files | id=%s name=%s", skill_id, spec["name"])

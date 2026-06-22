@@ -8,10 +8,11 @@
  *   - 相同工具的连续调用折叠为一个节点，内部展示每次的 query
  *   - 不同工具之间用箭头连接
  *   - 正在执行的节点有旋转动画，完成的节点显示勾
+ *   - __compressing__ 特殊节点：紫色主题，可展开查看压缩详情
  */
 
 import { useState } from "react";
-import { Loader2, CheckCircle2, XCircle, Search, Globe, FileText, Code2, Wrench, ChevronDown, ChevronRight } from "lucide-react";
+import { Loader2, CheckCircle2, XCircle, Search, Globe, FileText, Code2, Wrench, ChevronDown, ChevronRight, Scissors } from "lucide-react";
 import type { AgentStep } from "@/lib/mock-chat-data";
 
 /** 工具名 → 图标映射 */
@@ -48,6 +49,119 @@ interface StepGroup {
   status: "running" | "done" | "error";
 }
 
+// ── 压缩节点（__compressing__ 特殊节点）──
+function CompressingNode({ group, isLast }: { group: StepGroup; isLast: boolean }) {
+  const [expanded, setExpanded] = useState(false);
+  const step = group.steps[0];
+  const isRunning = group.status === "running";
+
+  // 从 step.args 中读取压缩详情（由 page.tsx 写入）
+  const freedTokens: number = (step?.args?.["freed_tokens"] as number) ?? 0;
+  const compressedMessages: Array<{ role: string; summary: string }> =
+    (step?.args?.["compressed_messages"] as Array<{ role: string; summary: string }>) ?? [];
+
+  const colors = isRunning
+    ? { border: "rgba(139,92,246,0.4)", bg: "rgba(139,92,246,0.08)", icon: "#8b5cf6", text: "#a78bfa" }
+    : { border: "rgba(139,92,246,0.3)", bg: "rgba(139,92,246,0.06)", icon: "#7c3aed", text: "#8b5cf6" };
+
+  return (
+    <div style={{ display: "flex", alignItems: "flex-start", gap: "0" }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: "4px", minWidth: "140px", maxWidth: "220px" }}>
+        {/* 节点主体 */}
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: "4px",
+            padding: "8px 10px",
+            borderRadius: "8px",
+            border: `1px solid ${colors.border}`,
+            backgroundColor: colors.bg,
+            cursor: compressedMessages.length > 0 ? "pointer" : "default",
+            transition: "all 0.2s ease",
+          }}
+          onClick={() => compressedMessages.length > 0 && setExpanded((v) => !v)}
+        >
+          {/* 顶行 */}
+          <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
+            {isRunning ? (
+              <Loader2 size={12} style={{ color: colors.icon, flexShrink: 0, animation: "spin 1s linear infinite" }} />
+            ) : (
+              <CheckCircle2 size={12} style={{ color: colors.icon, flexShrink: 0 }} />
+            )}
+            <Scissors size={11} style={{ color: colors.icon, flexShrink: 0 }} />
+            <span style={{ fontSize: "11px", fontWeight: 600, color: colors.text, flex: 1, whiteSpace: "nowrap" }}>
+              {isRunning ? "压缩上下文中..." : "上下文已压缩"}
+            </span>
+            {compressedMessages.length > 0 && (
+              <span style={{ color: "var(--text-muted)", flexShrink: 0 }}>
+                {expanded ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
+              </span>
+            )}
+          </div>
+
+          {/* 释放 token 数 */}
+          {!isRunning && freedTokens > 0 && (
+            <div style={{ fontSize: "10px", color: colors.text, paddingLeft: "17px" }}>
+              释放 {freedTokens >= 1000 ? `${(freedTokens / 1000).toFixed(1)}k` : freedTokens} tokens
+            </div>
+          )}
+
+          {/* 展开：压缩消息摘要列表 */}
+          {expanded && compressedMessages.length > 0 && (
+            <div
+              style={{
+                marginTop: "4px",
+                paddingLeft: "17px",
+                display: "flex",
+                flexDirection: "column",
+                gap: "4px",
+                borderTop: `1px solid ${colors.border}`,
+                paddingTop: "6px",
+              }}
+            >
+              {compressedMessages.map((cm, i) => (
+                <div key={i} style={{ display: "flex", flexDirection: "column", gap: "1px" }}>
+                  <span style={{ fontSize: "9px", color: colors.text, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em" }}>
+                    {cm.role}
+                  </span>
+                  <span
+                    style={{
+                      fontSize: "10px",
+                      color: "var(--text-muted)",
+                      lineHeight: 1.5,
+                      display: "-webkit-box",
+                      WebkitLineClamp: 2,
+                      WebkitBoxOrient: "vertical",
+                      overflow: "hidden",
+                    }}
+                    title={cm.summary}
+                  >
+                    {cm.summary}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* 箭头连接线 */}
+      {!isLast && (
+        <div style={{ display: "flex", alignItems: "center", paddingTop: "14px", flexShrink: 0 }}>
+          <div style={{ width: "20px", height: "1px", backgroundColor: "var(--border-subtle)" }} />
+          <div style={{
+            width: 0, height: 0,
+            borderTop: "4px solid transparent",
+            borderBottom: "4px solid transparent",
+            borderLeft: "5px solid var(--border-subtle)",
+          }} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** 将 steps 按工具名分组（连续相同工具合并，不连续的不合并） */
 function groupSteps(steps: AgentStep[]): StepGroup[] {
   const groups: StepGroup[] = [];
@@ -68,7 +182,7 @@ function groupSteps(steps: AgentStep[]): StepGroup[] {
   return groups;
 }
 
-/** 单个折叠节点 */
+/** 单个折叠节点（普通工具调用） */
 function StepGroupNode({ group, isLast }: { group: StepGroup; isLast: boolean }) {
   const [expanded, setExpanded] = useState(false);
   const { name, steps, status } = group;
@@ -329,13 +443,21 @@ export function AgentFlowChart({ steps, streaming }: AgentFlowChartProps) {
           paddingBottom: "2px",
         }}
       >
-        {groups.map((group, idx) => (
-          <StepGroupNode
-            key={`${group.name}-${idx}`}
-            group={group}
-            isLast={idx === groups.length - 1}
-          />
-        ))}
+        {groups.map((group, idx) =>
+          group.name === "__compressing__" ? (
+            <CompressingNode
+              key={`__compressing__-${idx}`}
+              group={group}
+              isLast={idx === groups.length - 1}
+            />
+          ) : (
+            <StepGroupNode
+              key={`${group.name}-${idx}`}
+              group={group}
+              isLast={idx === groups.length - 1}
+            />
+          )
+        )}
 
         {/* 流式执行中：最后一个节点已完成，显示"等待下一步"占位 */}
         {streaming && groups.length > 0 && groups[groups.length - 1].status === "done" && (

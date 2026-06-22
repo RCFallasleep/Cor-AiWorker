@@ -9,6 +9,8 @@
   - agent_memories   Agent 记忆（soul/memory/user/common 四层）
   - projects         协作项目
   - project_members  项目成员
+  - scheduled_tasks  定时任务定义
+  - task_runs        定时任务执行记录
 
 设计原则：
   - 单文件 SQLite（/data/corwork.db），WAL 模式支持并发读
@@ -195,6 +197,56 @@ async def init_db() -> None:
             )
         """)
 
+        # ── 定时任务表 ────────────────────────────────────────────────────────
+        # trigger_type: "once" | "cron"
+        # action_type:  "remind" | "agent_run"（MVP 只实现 remind）
+        # status:       "active" | "paused" | "done" | "cancelled"
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS scheduled_tasks (
+                id              TEXT PRIMARY KEY,
+                user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                -- 提醒消息发送到哪个会话（通常是用户自己的 agent_self 联系人）
+                target_user_id  TEXT NOT NULL,
+                title           TEXT NOT NULL,
+                trigger_type    TEXT NOT NULL DEFAULT 'once',
+                -- ISO 时间字符串（once 类型）
+                trigger_at      TEXT,
+                -- cron 表达式（cron 类型，如 "0 9 * * 1" = 每周一 9:00）
+                cron_expr       TEXT,
+                action_type     TEXT NOT NULL DEFAULT 'remind',
+                -- remind 类型：提醒文案；agent_run 类型：Agent prompt
+                action_payload  TEXT NOT NULL DEFAULT '',
+                status          TEXT NOT NULL DEFAULT 'active',
+                created_at      TEXT NOT NULL,
+                -- 下次执行时间（UTC ISO），scheduler-service 用于排序和过滤
+                next_run_at     TEXT
+            )
+        """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tasks_user ON scheduled_tasks(user_id, status)"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tasks_next_run ON scheduled_tasks(next_run_at, status)"
+        )
+
+        # ── 定时任务执行记录表 ────────────────────────────────────────────────
+        # status: "success" | "failed" | "running"
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS task_runs (
+                id          TEXT PRIMARY KEY,
+                task_id     TEXT NOT NULL REFERENCES scheduled_tasks(id) ON DELETE CASCADE,
+                started_at  TEXT NOT NULL,
+                finished_at TEXT,
+                status      TEXT NOT NULL DEFAULT 'running',
+                -- Agent 输出或错误信息（Markdown 格式）
+                result      TEXT NOT NULL DEFAULT '',
+                FOREIGN KEY (task_id) REFERENCES scheduled_tasks(id)
+            )
+        """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_runs_task ON task_runs(task_id, started_at)"
+        )
+
         await db.commit()
 
         # ── 迁移检测：补全旧库缺失的表/列 ────────────────────────────────────
@@ -256,6 +308,57 @@ async def init_db() -> None:
         if "forward_from" not in cols:
             logger.info("corwork_db: migrating — adding forward_from to messages")
             await db.execute("ALTER TABLE messages ADD COLUMN forward_from TEXT")
+            await db.commit()
+
+        # scheduled_tasks 表（v4 新增）
+        cur = await db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='scheduled_tasks'"
+        )
+        if not await cur.fetchone():
+            logger.info("corwork_db: migrating — creating scheduled_tasks table")
+            await db.execute("""
+                CREATE TABLE scheduled_tasks (
+                    id              TEXT PRIMARY KEY,
+                    user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    target_user_id  TEXT NOT NULL,
+                    title           TEXT NOT NULL,
+                    trigger_type    TEXT NOT NULL DEFAULT 'once',
+                    trigger_at      TEXT,
+                    cron_expr       TEXT,
+                    action_type     TEXT NOT NULL DEFAULT 'remind',
+                    action_payload  TEXT NOT NULL DEFAULT '',
+                    status          TEXT NOT NULL DEFAULT 'active',
+                    created_at      TEXT NOT NULL,
+                    next_run_at     TEXT
+                )
+            """)
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tasks_user ON scheduled_tasks(user_id, status)"
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tasks_next_run ON scheduled_tasks(next_run_at, status)"
+            )
+            await db.commit()
+
+        # task_runs 表（v4 新增）
+        cur = await db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='task_runs'"
+        )
+        if not await cur.fetchone():
+            logger.info("corwork_db: migrating — creating task_runs table")
+            await db.execute("""
+                CREATE TABLE task_runs (
+                    id          TEXT PRIMARY KEY,
+                    task_id     TEXT NOT NULL REFERENCES scheduled_tasks(id) ON DELETE CASCADE,
+                    started_at  TEXT NOT NULL,
+                    finished_at TEXT,
+                    status      TEXT NOT NULL DEFAULT 'running',
+                    result      TEXT NOT NULL DEFAULT ''
+                )
+            """)
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_runs_task ON task_runs(task_id, started_at)"
+            )
             await db.commit()
 
     logger.info("corwork_db: initialized | path=%s", _DB_PATH)

@@ -790,3 +790,11 @@
 | 2026-06-17 | Phase 7D | 前端：buildSystemPrompt 注入当前断点快照状态（有快照时强制提示调用工具，无快照时说明暂无），修复 Agent 凭记忆回答「没有断点」的问题 | - |
 | 2026-06-17 | Phase 7D | 前端：openDirHandle 和 handleExpandDir 改为递归读取完整目录树（readFullTree），修复文件树只显示一层、子目录显示「空目录」的问题 | - |
 | 2026-06-17 | Phase 7D | 工程：plugins/debuggerPlugin/ 目录新增，将 Android Studio 断点调试插件源码纳入 Cor-AiWorker 仓库统一管理；更新 .gitignore 忽略 build/、.gradle/、.kotlin/ 等编译产物 | - |
+
+---
+
+## Phase 8 及后续迭代
+
+Phase 7 完成后，后续小功能迭代记录在子文档中：
+
+👉 **[iteration-log-v2.md](./iteration-log-v2.md)**

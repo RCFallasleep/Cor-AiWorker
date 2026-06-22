@@ -1,0 +1,6 @@
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+pydantic>=2.10.4,<2.11.0
+browser-use==0.1.48
+langchain-openai==0.3.11
+playwright>=1.52.0

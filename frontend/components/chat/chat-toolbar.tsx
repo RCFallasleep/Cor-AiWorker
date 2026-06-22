@@ -21,6 +21,8 @@ import {
   Code2,
   Search as SearchIcon,
   Plus,
+  Loader2,
+  Scissors,
 } from "lucide-react";
 import Link from "next/link";
 import { agentRepo } from "@/lib/repositories/agent-repository";
@@ -343,6 +345,97 @@ function Divider() {
   );
 }
 
+// ── 上下文占用进度条 ──
+function ContextBar({
+  totalInputTokens,
+  contextLimit,
+  ctxUsagePercent,
+  onManualCompress,
+  isCompressing,
+}: {
+  totalInputTokens: number;
+  contextLimit: number;
+  ctxUsagePercent: number;
+  onManualCompress?: () => void;
+  isCompressing?: boolean;
+}) {
+  // 只有有实际数据时才显示（至少发过一条消息）
+  if (totalInputTokens === 0) return null;
+
+  const color =
+    ctxUsagePercent >= 90 ? "#ef4444" :
+    ctxUsagePercent >= 70 ? "#f59e0b" :
+    "#22c55e";
+
+  const bgColor =
+    ctxUsagePercent >= 90 ? "rgba(239,68,68,0.12)" :
+    ctxUsagePercent >= 70 ? "rgba(245,158,11,0.12)" :
+    "rgba(34,197,94,0.12)";
+
+  const formatK = (n: number) => n >= 1000 ? `${Math.round(n / 1000)}k` : String(n);
+
+  return (
+    <div
+      style={{
+        display: "flex", alignItems: "center", gap: "8px",
+        padding: "4px 16px",
+        backgroundColor: bgColor,
+        borderBottom: "1px solid var(--border-subtle)",
+        flexShrink: 0,
+        transition: "background-color 0.3s",
+      }}
+    >
+      {/* 进度条 */}
+      <div
+        style={{
+          flex: 1, height: "3px", borderRadius: "2px",
+          backgroundColor: "var(--border-color)",
+          overflow: "hidden",
+        }}
+      >
+        <div
+          style={{
+            height: "100%",
+            width: `${Math.min(100, ctxUsagePercent)}%`,
+            backgroundColor: color,
+            borderRadius: "2px",
+            transition: "width 0.4s ease, background-color 0.3s",
+          }}
+        />
+      </div>
+
+      {/* 文字标注 */}
+      <span style={{ fontSize: "11px", color, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap", flexShrink: 0 }}>
+        {ctxUsagePercent}% · {formatK(totalInputTokens)} / {formatK(contextLimit)} tokens
+      </span>
+
+      {/* 手动压缩按钮 */}
+      <button
+        title={isCompressing ? "正在压缩..." : "智能压缩上下文"}
+        onClick={onManualCompress}
+        disabled={isCompressing}
+        style={{
+          display: "flex", alignItems: "center", gap: "4px",
+          padding: "2px 7px", borderRadius: "5px",
+          border: `1px solid ${color}`,
+          backgroundColor: "transparent",
+          color,
+          fontSize: "11px", cursor: isCompressing ? "not-allowed" : "pointer",
+          outline: "none", flexShrink: 0,
+          opacity: isCompressing ? 0.6 : 1,
+          transition: "opacity 0.2s",
+        }}
+      >
+        {isCompressing
+          ? <Loader2 size={10} style={{ animation: "spin 1s linear infinite" }} />
+          : <Scissors size={10} />
+        }
+        {isCompressing ? "压缩中..." : "压缩"}
+      </button>
+    </div>
+  );
+}
+
 // ── 主组件 ──
 export function ChatToolbar({
   conversationId,
@@ -353,6 +446,11 @@ export function ChatToolbar({
   streaming = false,
   onAbort,
   onNewConversation,
+  totalInputTokens = 0,
+  contextLimit = 128000,
+  ctxUsagePercent = 0,
+  onManualCompress,
+  isCompressing = false,
 }: {
   conversationId: string | null;
   conversations: ConversationRow[];
@@ -362,59 +460,72 @@ export function ChatToolbar({
   streaming?: boolean;
   onAbort?: () => void;
   onNewConversation?: () => void;
+  totalInputTokens?: number;
+  contextLimit?: number;
+  ctxUsagePercent?: number;
+  onManualCompress?: () => void;
+  isCompressing?: boolean;
 }) {
   return (
-    <div
-      style={{
-        display: "flex", alignItems: "center", justifyContent: "space-between",
-        padding: "8px 16px",
-        borderBottom: "1px solid var(--border-subtle)",
-        backgroundColor: "var(--topbar-bg)",
-        flexShrink: 0, gap: "8px",
-      }}
-    >
-      {/* 左侧：新对话按钮 + 会话选择器 + Agent 选择 */}
-      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-        <ToolBtn title="新对话" onClick={onNewConversation}>
-          <SquarePen size={15} />
-        </ToolBtn>
-        <ConversationSelector
-          currentId={conversationId}
-          conversations={conversations}
-          onChange={onConversationChange}
-        />
-        <AgentSelector
-          value={agentId}
-          onChange={onAgentChange}
-        />
-
-        {/* 流式输出中：显示中止按钮 */}
-        {streaming && (
-          <ToolBtn title="停止生成" onClick={onAbort}>
-            <StopCircle size={15} style={{ color: "#ef4444" }} />
+    <div style={{ flexShrink: 0 }}>
+      {/* 主工具栏行 */}
+      <div
+        style={{
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+          padding: "8px 16px",
+          borderBottom: ctxUsagePercent > 0 ? "none" : "1px solid var(--border-subtle)",
+          backgroundColor: "var(--topbar-bg)",
+          gap: "8px",
+        }}
+      >
+        {/* 左侧：新对话按钮 + 会话选择器 + Agent 选择 */}
+        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+          <ToolBtn title="新对话" onClick={onNewConversation}>
+            <SquarePen size={15} />
           </ToolBtn>
-        )}
+          <ConversationSelector
+            currentId={conversationId}
+            conversations={conversations}
+            onChange={onConversationChange}
+          />
+          <AgentSelector
+            value={agentId}
+            onChange={onAgentChange}
+          />
+
+          {/* 流式输出中：显示中止按钮 */}
+          {streaming && (
+            <ToolBtn title="停止生成" onClick={onAbort}>
+              <StopCircle size={15} style={{ color: "#ef4444" }} />
+            </ToolBtn>
+          )}
+        </div>
+
+        {/* 右侧：工具按钮 */}
+        <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+          <ToolBtn title="下载对话">
+            <Download size={15} />
+          </ToolBtn>
+          <ToolBtn title="工具 / MCP">
+            <Wrench size={15} />
+          </ToolBtn>
+          <ToolBtn title="截图">
+            <Scan size={15} />
+          </ToolBtn>
+          <ToolBtn title="用户" badge={3}>
+            <User size={15} />
+          </ToolBtn>
+        </div>
       </div>
 
-      {/* 右侧：工具按钮 */}
-      <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-        <ToolBtn title="刷新上下文">
-          <RefreshCw size={15} />
-        </ToolBtn>
-        <Divider />
-        <ToolBtn title="下载对话" active>
-          <Download size={15} />
-        </ToolBtn>
-        <ToolBtn title="工具 / MCP">
-          <Wrench size={15} />
-        </ToolBtn>
-        <ToolBtn title="截图">
-          <Scan size={15} />
-        </ToolBtn>
-        <ToolBtn title="用户" badge={3}>
-          <User size={15} />
-        </ToolBtn>
-      </div>
+      {/* 上下文占用进度条（有数据时显示在工具栏下方） */}
+      <ContextBar
+        totalInputTokens={totalInputTokens}
+        contextLimit={contextLimit}
+        ctxUsagePercent={ctxUsagePercent}
+        onManualCompress={onManualCompress}
+        isCompressing={isCompressing}
+      />
     </div>
   );
 }

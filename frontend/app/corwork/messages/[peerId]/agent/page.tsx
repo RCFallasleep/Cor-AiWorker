@@ -191,7 +191,6 @@ export default function AgentDraftPage() {
       .map((m) => ({ role: m.role, content: m.content }));
 
     abortRef.current = new AbortController();
-    let reclassified = false;
 
     try {
       const token = getToken();
@@ -257,14 +256,6 @@ export default function AgentDraftPage() {
                   ? { ...m, thinkingContent: (m.thinkingContent ?? "") + (evt.content as string) }
                   : m
               )
-            );
-          } else if (evtType === "reclassify" && !reclassified) {
-            reclassified = true;
-            setMessages((prev) =>
-              prev.map((m) => {
-                if (m.id !== assistantId) return m;
-                return { ...m, thinkingContent: (m.thinkingContent ?? "") + m.content, content: "" };
-              })
             );
           } else if (evtType === "tool_call") {
             const toolName = evt.name as string;

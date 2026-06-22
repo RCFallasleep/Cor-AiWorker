@@ -14,7 +14,6 @@
  * SSE 事件类型（Agent 模式）：
  *   - delta          最终回复文字增量（实时流式）
  *   - thinking_delta 中间轮次思考文字增量（实时流式）
- *   - reclassify     将本轮已推出的 delta 重新归类为 thinking_delta
  *   - tool_call      工具调用开始
  *   - tool_result    工具执行结果
  *   - done           流式结束（含 token 用量）
@@ -64,17 +63,21 @@ export interface ToolResultEvent {
   content: string;
 }
 
-/**
- * reclassify 事件：后端确认本轮为思考轮后，通知前端把已渲染的 delta 移入思考区。
- * 场景：模型先输出文字再输出 tool_call，前端已乐观渲染为 delta，需要重新归类。
- */
-export interface ReclassifyEvent {
-  type: "reclassify";
-  from: "delta";
-  to: "thinking_delta";
+/** 上下文压缩事件 */
+export interface CompressingEvent {
+  type: "compressing";
+  message: string;
 }
 
-export type AgentEvent = ToolCallEvent | ToolResultEvent | ReclassifyEvent;
+export interface CompressDoneEvent {
+  type: "compress_done";
+  freed_tokens: number;
+  message: string;
+  /** 压缩后的 messages（供前端更新本地历史） */
+  compressed_messages?: Array<{ role: string; content: string }>;
+}
+
+export type AgentEvent = ToolCallEvent | ToolResultEvent | CompressingEvent | CompressDoneEvent;
 
 /** 后端 FastAPI 地址，未配置时回退到 Next.js 内置路由 */
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? "";
@@ -124,6 +127,12 @@ function buildRequestBody(
    * - string[]：只启用指定工具（Skill 中心场景）
    */
   toolNames?: string[] | null,
+  /** 当前登录用户 ID（供 scheduler 等工具注入 user_id） */
+  userId?: string | null,
+  /** 用户自己的 Agent 助理 user_id（供 scheduler 写入提醒目标） */
+  agentSelfId?: string | null,
+  /** 仅压缩模式：只压缩 messages，不跑 agent loop */
+  compressOnly?: boolean,
 ): string {
   // 构建文档注入提示（告知 Agent 有哪些文件可读）
   const docAttachments = (attachments ?? []).filter(
@@ -167,6 +176,11 @@ function buildRequestBody(
       session_id: sessionId ?? null,
       // tool_names 为 undefined 时不传（后端默认使用全部工具）
       ...(toolNames !== undefined ? { tool_names: toolNames } : {}),
+      // 用户身份（供 scheduler 等工具注入）
+      ...(userId ? { user_id: userId } : {}),
+      ...(agentSelfId ? { agent_self_id: agentSelfId } : {}),
+      // 仅压缩模式
+      ...(compressOnly ? { compress_only: true } : {}),
     });
   }
   return JSON.stringify({
@@ -189,7 +203,7 @@ export function useChatStream() {
       history: ChatMessage[],
       userContent: string,
       onDelta: (delta: string) => void,
-      onDone: (inputTokens: number, outputTokens: number) => void,
+      onDone: (inputTokens: number, outputTokens: number, contextLimit?: number) => void,
       onError: (msg: string) => void,
       onAgentEvent?: (event: AgentEvent) => void,
       /** 中间轮次思考文字增量回调（区别于最终回复的 onDelta） */
@@ -208,6 +222,12 @@ export function useChatStream() {
        * - string[]：只启用指定工具名
        */
       toolNames?: string[] | null,
+      /** 当前登录用户 ID（供 scheduler 等工具注入 user_id） */
+      userId?: string | null,
+      /** 用户自己的 Agent 助理 user_id（暂时与 userId 相同，等 Agent 助理账号体系建立后更新） */
+      agentSelfId?: string | null,
+      /** 仅压缩模式：只压缩 messages，不跑 agent loop */
+      compressOnly?: boolean,
     ) => {
       setState({ streaming: true, error: null });
 
@@ -224,7 +244,7 @@ export function useChatStream() {
         const res = await fetch(endpoint, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: buildRequestBody(model, messages, context, sessionId, systemPrompt, attachments, toolNames),
+          body: buildRequestBody(model, messages, context, sessionId, systemPrompt, attachments, toolNames, userId, agentSelfId, compressOnly),
           signal: abortRef.current.signal,
         });
 
@@ -254,20 +274,21 @@ export function useChatStream() {
               const event = JSON.parse(raw);
 
               if (event.type === "delta") {
-                // 最终回复文字增量
                 onDelta(event.content);
               } else if (event.type === "thinking_delta") {
-                // 中间轮次思考文字增量
                 onThinkingDelta?.(event.content);
-              } else if (event.type === "reclassify") {
-                // 后端确认本轮为思考轮：通知前端把已渲染的 delta 移入思考区
-                onAgentEvent?.(event as ReclassifyEvent);
               } else if (event.type === "done") {
                 onDone(
                   event.input_tokens ?? event.inputTokens ?? 0,
-                  event.output_tokens ?? event.outputTokens ?? 0
+                  event.output_tokens ?? event.outputTokens ?? 0,
+                  event.context_limit ?? undefined,
                 );
-              } else if (event.type === "tool_call" || event.type === "tool_result") {
+              } else if (
+                event.type === "tool_call" ||
+                event.type === "tool_result" ||
+                event.type === "compressing" ||
+                event.type === "compress_done"
+              ) {
                 onAgentEvent?.(event as AgentEvent);
               } else if (event.type === "error") {
                 throw new Error(event.message);

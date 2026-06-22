@@ -11,6 +11,44 @@ services:
       - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
     restart: unless-stopped
 
+  # ── Browser Service（Playwright + browser-use）────────────────────────────
+  # 提供真实浏览器读取能力，供 browser_read 工具调用
+  # 使用 Debian slim 镜像（Alpine 不支持 Playwright）
+  browser-service:
+    build:
+      context: ./browser-service
+      dockerfile: Dockerfile
+    container_name: cor-browser
+    ports:
+      - "7788:7788"
+    # 共享宿主机网络命名空间（可选，用于访问宿主机上的本地服务）
+    # network_mode: host  # 如需访问宿主机服务时取消注释
+    environment:
+      # Playwright 在容器内运行需要禁用沙箱
+      - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+    restart: unless-stopped
+
+  # ── Scheduler Service（定时任务调度）─────────────────────────────────────
+  # 独立微服务，轮询主后端拉取任务，到期后触发提醒消息
+  scheduler-service:
+    build:
+      context: ./scheduler-service
+      dockerfile: Dockerfile
+    container_name: cor-scheduler
+    ports:
+      - "8001:8001"
+    environment:
+      # 主后端地址（Docker 内部网络）
+      - BACKEND_URL=http://backend:8000
+      # 与主后端共享的 service token（需与 backend 的 SCHEDULER_SERVICE_TOKEN 一致）
+      - SERVICE_TOKEN=change-me-scheduler-token
+      # 轮询间隔（秒）
+      - POLL_INTERVAL_SECONDS=30
+      - TZ=Asia/Shanghai
+    depends_on:
+      - backend
+    restart: unless-stopped
+
   # ── 后端 FastAPI ──────────────────────────────────────────────────────────
   backend:
     build:
@@ -21,6 +59,10 @@ services:
       - "8000:8000"
     environment:
       - SEARXNG_BASE_URL=http://searxng:8080
+      # Browser Service 地址（Docker 内部网络）
+      - BROWSER_SERVICE_URL=http://browser-service:7788
+      # Scheduler Service 共享 token（与 scheduler-service 的 SERVICE_TOKEN 一致）
+      - SCHEDULER_SERVICE_TOKEN=change-me-scheduler-token
       # 开发阶段放开所有来源，手机/模拟器均可访问
       # 生产环境改为具体域名
       - ALLOWED_ORIGINS=["http://localhost:3000","http://127.0.0.1:3000","http://10.0.2.2:3000","*"]
@@ -34,6 +76,7 @@ services:
       # 示例见 docker-compose.override.yml.example
     depends_on:
       - searxng
+      - browser-service
     restart: unless-stopped
 
   # ── 前端 Next.js ──────────────────────────────────────────────────────────

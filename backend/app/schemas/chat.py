@@ -54,6 +54,10 @@ class ChatRequest(BaseModel):
     )
     context: ClientContext | None = Field(None, description="客户端静态上下文（时区、位置等）")
     session_id: str | None = Field(None, description="前端会话 ID，用于日志关联")
+    # 协作模块：当前登录用户 ID，用于 scheduler / forward_message 等工具注入
+    user_id: str | None = Field(None, description="当前登录用户 ID（由前端从 JWT 解析后传入）")
+    # 协作模块：Agent 助理的 user_id（即 target_user_id），用于定时任务提醒写入目标
+    agent_self_id: str | None = Field(None, description="用户自己的 Agent 助理 user_id")
     tool_names: list[str] | None = Field(
         None,
         description=(
@@ -61,6 +65,13 @@ class ChatRequest(BaseModel):
             "为 null 时使用全部已注册工具（Agent 对话场景）；"
             "传空列表 [] 时禁用所有工具（纯 Chat 场景）；"
             "传具体名称列表时只启用指定工具（Skill 中心场景）。"
+        ),
+    )
+    compress_only: bool = Field(
+        False,
+        description=(
+            "仅压缩模式：为 true 时只对 messages 做智能摘要压缩，不进入 agent loop。"
+            "供前端手动压缩按钮调用，压缩完成后通过 SSE 返回 compress_done 事件（含压缩后的 messages）。"
         ),
     )
 

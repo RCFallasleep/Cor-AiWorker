@@ -327,6 +327,11 @@ export interface Skill {
   updated_at: string;
   files?: SkillFile[];
   composition?: SkillComposition[];
+  /**
+   * 显式声明的工具名列表（内置 Skill 可包含多个工具）。
+   * 空数组表示由前端按命名规则推断（toSnakeCase / skill_ 前缀）。
+   */
+  tool_names?: string[];
 }
 
 export const skillsApi = {

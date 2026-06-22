@@ -33,6 +33,7 @@ from app.api.v1 import admin as admin_router              # noqa: E402
 from app.api.v1 import memories as memories_router        # noqa: E402
 from app.api.v1 import workspace as workspace_router      # noqa: E402
 from app.api.v1 import debug_bridge as debug_bridge_router  # noqa: E402
+from app.api.v1 import schedule as schedule_router        # noqa: E402
 from app.services import log_store                        # noqa: E402
 from app.services import skill_store                      # noqa: E402
 from app.services import corwork_db                       # noqa: E402
@@ -44,6 +45,8 @@ import app.tools.forward_message # noqa: F401, E402
 import app.tools.save_memory     # noqa: F401, E402
 import app.tools.file_tools      # noqa: F401, E402
 import app.tools.debug_tools     # noqa: F401, E402
+import app.tools.browser_read    # noqa: F401, E402
+import app.tools.scheduler       # noqa: F401, E402
 from app.tools.skill_runner import load_enabled_skills  # noqa: E402
 
 
@@ -98,6 +101,7 @@ app.include_router(documents_router.router, prefix="/v1")
 app.include_router(memories_router.router, prefix="/v1")
 app.include_router(workspace_router.router, prefix="/v1")
 app.include_router(debug_bridge_router.router, prefix="/v1")
+app.include_router(schedule_router.router, prefix="/v1")
 
 
 # ── 根路径重定向到管理面板 ────────────────────────────────────────────────────

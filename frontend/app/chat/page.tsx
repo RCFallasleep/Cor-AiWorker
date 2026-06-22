@@ -9,6 +9,7 @@ import { useChatStream, type AgentEvent, type Attachment } from "@/lib/hooks/use
 import { useAvailableModels } from "@/lib/hooks/use-available-models";
 import { useClientContext } from "@/lib/hooks/use-client-context";
 import { useEnabledSkillTools } from "@/lib/hooks/use-enabled-skill-tools";
+import { useAuth } from "@/contexts/auth-context";
 import { conversationRepo } from "@/lib/repositories/conversation-repository";
 import { agentRepo } from "@/lib/repositories/agent-repository";
 import { type ChatMessage, type AgentStep } from "@/lib/mock-chat-data";
@@ -73,6 +74,14 @@ function ChatPageInner() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
 
+  // ── 上下文占用追踪（Phase 8.6）──
+  // 累计输入 token 数（跨轮次累加，每次 onDone 更新）
+  const [totalInputTokens, setTotalInputTokens] = useState(0);
+  // 当前模型的上下文窗口大小（从 done 事件获取）
+  const [contextLimit, setContextLimit] = useState(128000);
+  // 是否正在压缩（显示 compressing 状态）
+  const [isCompressing, setIsCompressing] = useState(false);
+
   const [conversations, setConversations] = useState<ConversationRow[]>([]);
   const [currentConvId, setCurrentConvId] = useState<string | null>(null);
   const conversationIdRef = useRef<string | null>(null);
@@ -82,6 +91,8 @@ function ChatPageInner() {
   const { models, loading: modelsLoading } = useAvailableModels();
   // 从 Skill 中心拉取已启用的工具名白名单（排除协作专用工具）
   const { toolNames } = useEnabledSkillTools();
+  // 当前登录用户（供 scheduler 等工具注入 user_id）
+  const { user } = useAuth();
   const currentModel: AvailableModel | undefined = currentAgent
     ? (models.find((m) => m.label === currentAgent.model || m.apiName === currentAgent.model) ?? models[0])
     : undefined;
@@ -200,6 +211,10 @@ function ChatPageInner() {
     currentAiMsgIdRef.current = null;
     thinkingBufRef.current = "";
     agentStepsRef.current = [];
+    // 新对话时重置上下文追踪
+    setTotalInputTokens(0);
+    setContextLimit(128000);
+    setIsCompressing(false);
     // 新对话时清除持久化的对话 id，保留 Agent 选择
     localStorage.removeItem(LAST_CONV_KEY);
   }, []);
@@ -287,16 +302,28 @@ function ChatPageInner() {
           );
         },
         // onDone：流式结束，把 agentSteps 一起存入 DB
-        async (inputTokens, outputTokens) => {
+        async (inputTokens, outputTokens, newContextLimit) => {
+          // 累计 input tokens（跨轮次）
+          setTotalInputTokens((prev) => {
+            const next = prev + inputTokens;
+            return next;
+          });
+          if (newContextLimit) setContextLimit(newContextLimit);
+          setIsCompressing(false);
+
           // 从 ref 直接读取最终 agentSteps（同步可靠）
           const finalAgentSteps = agentStepsRef.current.length > 0
             ? agentStepsRef.current
             : undefined;
 
+          // 计算真实上下文占用百分比
+          const limit = newContextLimit ?? contextLimit;
+          const ctxPercent = limit > 0 ? Math.round((totalInputTokens + inputTokens) / limit * 100) : 0;
+
           const meta = {
             model: currentModel.label, inputTokens, outputTokens,
             wordCount: streamedContent.replace(/\s+/g, " ").split(" ").length,
-            ctxPercent: 0,
+            ctxPercent,
             // agentSteps 持久化到 meta，切换会话时可恢复
             ...(finalAgentSteps ? { agentSteps: finalAgentSteps } : {}),
           };
@@ -323,12 +350,11 @@ function ChatPageInner() {
           setErrorBanner(errMsg);
           setMessages((prev) => prev.filter((m) => m.id !== assistantPlaceholderId));
         },
-        // onAgentEvent：tool_call / tool_result / reclassify
+        // onAgentEvent：tool_call / tool_result / compressing / compress_done
         (event: AgentEvent) => {
           if (event.type === "tool_call") {
-            // 新增一个 running 节点，把当前积累的思考文字写入
             const stepId = `step-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-            const thinkingText = thinkingBufRef.current.trim().slice(0, 80) || undefined; // 精简：最多 80 字
+            const thinkingText = thinkingBufRef.current.trim().slice(0, 80) || undefined;
             thinkingBufRef.current = "";
             updateAgentSteps((prev) => [
               ...prev,
@@ -341,7 +367,6 @@ function ChatPageInner() {
               } satisfies AgentStep,
             ]);
           } else if (event.type === "tool_result") {
-            // 找到最近一个同名 running 节点，标记为 done
             updateAgentSteps((prev) => {
               const idx = [...prev].reverse().findIndex(
                 (s) => s.name === event.name && s.status === "running"
@@ -352,15 +377,46 @@ function ChatPageInner() {
                 i === realIdx ? { ...s, status: "done" } : s
               );
             });
-          } else if (event.type === "reclassify") {
-            // 把 AI 气泡中已渲染的 delta 内容清空（已移入思考缓冲）
-            thinkingBufRef.current += streamedContent;
-            streamedContent = "";
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === assistantPlaceholderId ? { ...m, content: "" } : m
-              )
-            );
+          } else if (event.type === "compressing") {
+            // 压缩开始：在 agentSteps 中插入一个 compressing 节点
+            setIsCompressing(true);
+            const stepId = `compress-${Date.now()}`;
+            updateAgentSteps((prev) => [
+              ...prev,
+              {
+                id: stepId,
+                name: "__compressing__",
+                args: { message: event.message },
+                status: "running",
+              } satisfies AgentStep,
+            ]);
+          } else if (event.type === "compress_done") {
+            // 压缩完成：更新 compressing 节点为 done，携带压缩详情
+            setIsCompressing(false);
+            if (event.freed_tokens > 0) {
+              setTotalInputTokens((prev) => Math.max(0, prev - event.freed_tokens));
+            }
+            updateAgentSteps((prev) => {
+              const idx = [...prev].reverse().findIndex(
+                (s) => s.name === "__compressing__" && s.status === "running"
+              );
+              if (idx === -1) return prev;
+              const realIdx = prev.length - 1 - idx;
+              return prev.map((s, i) =>
+                i === realIdx
+                  ? {
+                      ...s,
+                      status: "done",
+                      args: {
+                        ...s.args,
+                        freed_tokens: event.freed_tokens,
+                        message: event.message,
+                        compressed_messages: event.compressed_messages,
+                      },
+                    }
+                  : s
+              );
+            });
           }
         },
         // onThinkingDelta：中间轮次思考文字，累积到 buffer
@@ -373,10 +429,90 @@ function ChatPageInner() {
         currentAgent?.systemPrompt || undefined,  // Agent system prompt
         attachments,                       // 图片附件
         toolNames,                         // Skill 中心工具白名单（排除协作专用工具）
+        user?.id ?? null,                  // user_id（供 scheduler 等工具注入）
+        user?.id ?? null,                  // agent_self_id（暂时与 user_id 相同）
+        false,                             // compressOnly
       );
     },
-    [messages, currentModel, currentAgent, sendMessage, streaming, clientContext, updateAgentSteps, toolNames]
+    [messages, currentModel, currentAgent, sendMessage, streaming, clientContext, updateAgentSteps, toolNames, user, contextLimit, totalInputTokens]
   );
+
+  // ── 手动压缩回调 ──
+  const handleManualCompress = useCallback(async () => {
+    if (!currentModel || streaming || isCompressing) return;
+    // 构造一个只含历史消息的 compress_only 请求
+    // 用一个空的 userContent，让 buildRequestBody 只传历史
+    const assistantPlaceholderId = `msg-compress-${Date.now()}`;
+    currentAiMsgIdRef.current = assistantPlaceholderId;
+    agentStepsRef.current = [];
+
+    const timestamp = nowTimestamp();
+    const compressMsg: ChatMessage = {
+      id: assistantPlaceholderId,
+      role: "assistant",
+      content: "",
+      timestamp,
+      agentSteps: [],
+    };
+    setMessages((prev) => [...prev, compressMsg]);
+
+    await sendMessage(
+      currentModel,
+      messages,
+      "",                    // 空 userContent（compress_only 模式不需要）
+      () => {},              // onDelta（压缩模式无输出）
+      async (inputTokens, _outputTokens, newContextLimit) => {
+        if (newContextLimit) setContextLimit(newContextLimit);
+        setIsCompressing(false);
+        // 移除占位消息
+        setMessages((prev) => prev.filter((m) => m.id !== assistantPlaceholderId));
+      },
+      (errMsg) => {
+        setErrorBanner(errMsg);
+        setMessages((prev) => prev.filter((m) => m.id !== assistantPlaceholderId));
+      },
+      (event: AgentEvent) => {
+        if (event.type === "compressing") {
+          setIsCompressing(true);
+          const stepId = `compress-${Date.now()}`;
+          updateAgentSteps((prev) => [
+            ...prev,
+            { id: stepId, name: "__compressing__", args: { message: event.message }, status: "running" } satisfies AgentStep,
+          ]);
+        } else if (event.type === "compress_done") {
+          setIsCompressing(false);
+          if (event.freed_tokens > 0) {
+            setTotalInputTokens((prev) => Math.max(0, prev - event.freed_tokens));
+          }
+          updateAgentSteps((prev) => {
+            const idx = [...prev].reverse().findIndex(
+              (s) => s.name === "__compressing__" && s.status === "running"
+            );
+            if (idx === -1) return prev;
+            const realIdx = prev.length - 1 - idx;
+            return prev.map((s, i) =>
+              i === realIdx
+                ? { ...s, status: "done", args: { ...s.args, freed_tokens: event.freed_tokens, message: event.message, compressed_messages: event.compressed_messages } }
+                : s
+            );
+          });
+        }
+      },
+      undefined,             // onThinkingDelta
+      true,                  // agentMode
+      clientContext,
+      conversationIdRef.current,
+      currentAgent?.systemPrompt || undefined,
+      [],                    // attachments
+      toolNames,
+      user?.id ?? null,
+      user?.id ?? null,
+      true,                  // compressOnly ← 关键
+    );
+  }, [currentModel, streaming, isCompressing, messages, sendMessage, clientContext, currentAgent, toolNames, user, updateAgentSteps]);
+
+  // 上下文占用百分比（0~100）
+  const ctxUsagePercent = contextLimit > 0 ? Math.min(100, Math.round(totalInputTokens / contextLimit * 100)) : 0;
 
   return (
     <div
@@ -397,13 +533,17 @@ function ChatPageInner() {
         onAgentChange={(agent) => {
           setCurrentAgent(agent);
           setErrorBanner(null);
-          // 持久化选择，下次进入页面自动恢复
           if (agent) localStorage.setItem(LAST_AGENT_KEY, agent.id);
           else localStorage.removeItem(LAST_AGENT_KEY);
         }}
         streaming={streaming}
         onAbort={abort}
         onNewConversation={handleNewConversation}
+        totalInputTokens={totalInputTokens}
+        contextLimit={contextLimit}
+        ctxUsagePercent={ctxUsagePercent}
+        onManualCompress={handleManualCompress}
+        isCompressing={isCompressing}
       />
 
       {/* 错误提示横幅 */}
@@ -464,7 +604,24 @@ function ChatPageInner() {
       {/* 消息列表 */}
       {messages.length > 0 && (
         <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
-          <MessageList messages={messages} streaming={streaming} />
+          <MessageList
+            messages={messages}
+            streaming={streaming}
+            onRetry={(lang, errorMsg) => {
+              // 渲染失败时自动发送修复请求给 Agent
+              const langLabels: Record<string, string> = {
+                echarts: "ECharts 图表",
+                mermaid: "Mermaid 图表",
+                svg: "SVG 图形",
+                html: "HTML 代码",
+              };
+              const label = langLabels[lang] ?? lang;
+              handleSend(
+                `你刚才生成的 ${label} 渲染失败了，错误信息：${errorMsg}。请检查代码并修正后重新输出。`,
+                []
+              );
+            }}
+          />
         </div>
       )}
 
@@ -473,6 +630,8 @@ function ChatPageInner() {
         onSend={handleSend}
         disabled={streaming || !currentAgent || !currentModel}
         supportsVision={supportsVision}
+        ctxUsagePercent={ctxUsagePercent}
+        onNewConversation={handleNewConversation}
         placeholder={
           streaming ? "AI 正在回复..." :
           !currentAgent ? "请先选择一个 Agent..." :
