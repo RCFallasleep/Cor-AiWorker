@@ -218,11 +218,31 @@ async def internal_run_result(
                  f"⏰ **定时提醒**：{remind_content}", "scheduled_remind", ts),
             )
 
+            # 同时写入 Agent 收件箱（task_remind 类型）
+            inbox_msg_id = str(uuid.uuid4())
+            await db.execute(
+                """INSERT INTO agent_inbox_messages
+                   (id, owner_id, sender_user_id, msg_type, title, content, task_id, created_at)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                (
+                    inbox_msg_id,
+                    user_id,           # 收件人 = 任务所有者
+                    None,              # 系统发出，无 sender
+                    "task_remind",
+                    f"⏰ {task['title']}",
+                    remind_content,
+                    body.task_id,
+                    ts,
+                ),
+            )
+
             await db.commit()
 
             # WS 推送给用户
             try:
                 from app.api.v1.collab import _ws_manager
+
+                # 推送普通消息
                 msg_payload = {
                     "id": msg_id,
                     "conversation_id": conv_id,
@@ -234,9 +254,56 @@ async def internal_run_result(
                     "created_at": ts,
                 }
                 await _ws_manager.broadcast_to_user(user_id, {"type": "new_message", "data": msg_payload})
+
+                # 推送 Agent 收件箱消息（触发侧边栏红点）
+                inbox_payload = {
+                    "id": inbox_msg_id,
+                    "owner_id": user_id,
+                    "sender_user_id": None,
+                    "msg_type": "task_remind",
+                    "title": f"⏰ {task['title']}",
+                    "content": remind_content,
+                    "task_id": body.task_id,
+                    "read_at": None,
+                    "created_at": ts,
+                }
+                await _ws_manager.broadcast_to_user(user_id, {"type": "agent_inbox_message", "data": inbox_payload})
+
                 logger.info("schedule: remind sent | task=%s user=%s", body.task_id, user_id)
             except Exception as e:
                 logger.warning("schedule: ws push failed (non-fatal) | %s", e)
+
+        elif task["action_type"] == "agent_run" and body.status in ("success", "failed"):
+            # agent_run 类型：执行完成后写入 task_report 到 Agent 收件箱
+            user_id = task["user_id"]
+            inbox_msg_id = str(uuid.uuid4())
+            report_title = f"{'✅' if body.status == 'success' else '❌'} 任务完成：{task['title']}"
+
+            await db.execute(
+                """INSERT INTO agent_inbox_messages
+                   (id, owner_id, sender_user_id, msg_type, title, content, task_id, created_at)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                (inbox_msg_id, user_id, None, "task_report", report_title, body.result, body.task_id, ts),
+            )
+            await db.commit()
+
+            try:
+                from app.api.v1.collab import _ws_manager
+                inbox_payload = {
+                    "id": inbox_msg_id,
+                    "owner_id": user_id,
+                    "sender_user_id": None,
+                    "msg_type": "task_report",
+                    "title": report_title,
+                    "content": body.result,
+                    "task_id": body.task_id,
+                    "read_at": None,
+                    "created_at": ts,
+                }
+                await _ws_manager.broadcast_to_user(user_id, {"type": "agent_inbox_message", "data": inbox_payload})
+                logger.info("schedule: task_report sent to inbox | task=%s user=%s", body.task_id, user_id)
+            except Exception as e:
+                logger.warning("schedule: inbox push failed (non-fatal) | %s", e)
         else:
             await db.commit()
 

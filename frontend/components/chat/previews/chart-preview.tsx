@@ -49,7 +49,7 @@ export function ChartPreview({ code, isDark = true, onRetry }: ChartPreviewProps
 </head>
 <body>
 <div id="chart"></div>
-<script src="https://unpkg.com/echarts@5/dist/echarts.min.js"></script>
+<script src="/echarts.min.js"></script>
 <script>
 (function() {
   try {

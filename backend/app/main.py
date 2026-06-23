@@ -41,7 +41,8 @@ from app.services import corwork_db                       # noqa: E402
 # 导入 tools 模块，触发工具注册到全局 tool_registry
 import app.tools.search          # noqa: F401, E402
 import app.tools.read_document   # noqa: F401, E402
-import app.tools.forward_message # noqa: F401, E402
+import app.tools.forward_message      # noqa: F401, E402
+import app.tools.send_direct_message  # noqa: F401, E402
 import app.tools.save_memory     # noqa: F401, E402
 import app.tools.file_tools      # noqa: F401, E402
 import app.tools.debug_tools     # noqa: F401, E402

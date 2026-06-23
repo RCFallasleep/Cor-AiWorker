@@ -77,7 +77,15 @@ export interface CompressDoneEvent {
   compressed_messages?: Array<{ role: string; content: string }>;
 }
 
-export type AgentEvent = ToolCallEvent | ToolResultEvent | CompressingEvent | CompressDoneEvent;
+/** 工具调用次数达到上限，等待用户决定是否继续 */
+export interface LoopLimitEvent {
+  type: "loop_limit";
+  /** 已完成的工具调用轮次数 */
+  loop_count: number;
+  message: string;
+}
+
+export type AgentEvent = ToolCallEvent | ToolResultEvent | CompressingEvent | CompressDoneEvent | LoopLimitEvent;
 
 /** 后端 FastAPI 地址，未配置时回退到 Next.js 内置路由 */
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? "";
@@ -133,6 +141,8 @@ function buildRequestBody(
   agentSelfId?: string | null,
   /** 仅压缩模式：只压缩 messages，不跑 agent loop */
   compressOnly?: boolean,
+  /** 覆盖最大循环次数（用户点击「继续执行」时传入，每次 +10） */
+  maxLoopOverride?: number | null,
 ): string {
   // 构建文档注入提示（告知 Agent 有哪些文件可读）
   const docAttachments = (attachments ?? []).filter(
@@ -181,6 +191,8 @@ function buildRequestBody(
       ...(agentSelfId ? { agent_self_id: agentSelfId } : {}),
       // 仅压缩模式
       ...(compressOnly ? { compress_only: true } : {}),
+      // 覆盖最大循环次数
+      ...(maxLoopOverride ? { max_loop_override: maxLoopOverride } : {}),
     });
   }
   return JSON.stringify({
@@ -228,6 +240,8 @@ export function useChatStream() {
       agentSelfId?: string | null,
       /** 仅压缩模式：只压缩 messages，不跑 agent loop */
       compressOnly?: boolean,
+      /** 覆盖最大循环次数（用户点击「继续执行」时传入） */
+      maxLoopOverride?: number | null,
     ) => {
       setState({ streaming: true, error: null });
 
@@ -244,7 +258,7 @@ export function useChatStream() {
         const res = await fetch(endpoint, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: buildRequestBody(model, messages, context, sessionId, systemPrompt, attachments, toolNames, userId, agentSelfId, compressOnly),
+          body: buildRequestBody(model, messages, context, sessionId, systemPrompt, attachments, toolNames, userId, agentSelfId, compressOnly, maxLoopOverride),
           signal: abortRef.current.signal,
         });
 
@@ -287,7 +301,8 @@ export function useChatStream() {
                 event.type === "tool_call" ||
                 event.type === "tool_result" ||
                 event.type === "compressing" ||
-                event.type === "compress_done"
+                event.type === "compress_done" ||
+                event.type === "loop_limit"
               ) {
                 onAgentEvent?.(event as AgentEvent);
               } else if (event.type === "error") {

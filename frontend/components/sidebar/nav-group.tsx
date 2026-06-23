@@ -10,9 +10,11 @@ interface NavGroupProps {
   group: NavGroup;
   collapsed: boolean;
   isFirst?: boolean;
+  /** badgeKey → 未读数映射，由父组件（Sidebar）注入 */
+  badges?: Record<string, number>;
 }
 
-export function NavGroupSection({ group, collapsed, isFirst }: NavGroupProps) {
+export function NavGroupSection({ group, collapsed, isFirst, badges = {} }: NavGroupProps) {
   const [isOpen, setIsOpen] = useState(true);
   const pathname = usePathname();
   const contentRef = useRef<HTMLDivElement>(null);
@@ -89,6 +91,7 @@ export function NavGroupSection({ group, collapsed, isFirst }: NavGroupProps) {
             );
             const isActive = (exactMatch || prefixMatch) && !hasBetterMatch;
             const Icon = item.icon;
+            const badgeCount = item.badgeKey ? (badges[item.badgeKey] ?? 0) : 0;
 
             return (
               <Link
@@ -107,6 +110,7 @@ export function NavGroupSection({ group, collapsed, isFirst }: NavGroupProps) {
                   backgroundColor: isActive ? "var(--sidebar-active)" : "transparent",
                   color: isActive ? "var(--text-primary)" : "var(--text-secondary)",
                   outline: "none",
+                  position: "relative",
                 }}
                 onMouseEnter={(e) => {
                   if (!isActive) {
@@ -121,18 +125,67 @@ export function NavGroupSection({ group, collapsed, isFirst }: NavGroupProps) {
                   }
                 }}
               >
-                <Icon
-                  size={16}
-                  style={{
-                    flexShrink: 0,
-                    color: isActive ? "var(--accent-blue)" : "currentColor",
-                    opacity: isActive ? 1 : 0.65,
-                  }}
-                />
+                {/* 图标（折叠时显示角标在图标右上角） */}
+                <div style={{ position: "relative", flexShrink: 0 }}>
+                  <Icon
+                    size={16}
+                    style={{
+                      color: isActive ? "var(--accent-blue)" : "currentColor",
+                      opacity: isActive ? 1 : 0.65,
+                    }}
+                  />
+                  {collapsed && badgeCount > 0 && (
+                    <span
+                      style={{
+                        position: "absolute",
+                        top: "-5px",
+                        right: "-5px",
+                        minWidth: "14px",
+                        height: "14px",
+                        borderRadius: "7px",
+                        backgroundColor: "#ef4444",
+                        color: "#fff",
+                        fontSize: "9px",
+                        fontWeight: 700,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        padding: "0 3px",
+                        boxShadow: "0 0 0 2px var(--sidebar-bg)",
+                      }}
+                    >
+                      {badgeCount > 99 ? "99+" : badgeCount}
+                    </span>
+                  )}
+                </div>
+
                 {!collapsed && (
-                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {item.label}
-                  </span>
+                  <>
+                    <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {item.label}
+                    </span>
+                    {/* 展开时角标显示在文字右侧 */}
+                    {badgeCount > 0 && (
+                      <span
+                        style={{
+                          minWidth: "18px",
+                          height: "18px",
+                          borderRadius: "9px",
+                          backgroundColor: "#ef4444",
+                          color: "#fff",
+                          fontSize: "10px",
+                          fontWeight: 700,
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          padding: "0 4px",
+                          flexShrink: 0,
+                        }}
+                      >
+                        {badgeCount > 99 ? "99+" : badgeCount}
+                      </span>
+                    )}
+                  </>
                 )}
               </Link>
             );

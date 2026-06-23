@@ -1,7 +1,6 @@
 """协作模块接口：Agent 名片、联系人、消息、WebSocket 实时推送。"""
 from __future__ import annotations
 
-import asyncio
 import logging
 import uuid
 from typing import Annotated
@@ -427,8 +426,6 @@ async def send_message(body: SendMessageRequest, current_user: CurrentUser):
 
     # 推送给接收方（如果在线）
     await _ws_manager.broadcast_to_user(body.receiver_id, {"type": "new_message", "data": msg})
-    # 触发 Agent 模拟回复（异步，不阻塞响应）
-    asyncio.create_task(_agent_auto_reply(current_user, body.receiver_id, body.content, conv_id))
 
     return msg
 
@@ -567,71 +564,6 @@ async def websocket_endpoint(ws: WebSocket, token: str | None = None):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Agent 模拟回复（本地模式，预留平台接入口）
-# ══════════════════════════════════════════════════════════════════════════════
-
-async def _agent_auto_reply(sender: dict, receiver_id: str, content: str, conv_id: str):
-    """
-    模拟对方 Agent 自动回复。
-
-    当前模式（local）：用本地 LLM 模拟对方 Agent 回复。
-    未来平台模式（platform）：通过 endpoint_url 调用对方设备的 Agent。
-    """
-    try:
-        # 查询对方的 Agent 名片
-        async with aiosqlite.connect(_DB_PATH) as db:
-            db.row_factory = aiosqlite.Row
-            cur = await db.execute(
-                "SELECT ap.*, u.display_name FROM agent_profiles ap JOIN users u ON u.id=ap.user_id WHERE ap.user_id=?",
-                (receiver_id,),
-            )
-            profile = await cur.fetchone()
-
-        if not profile:
-            return
-
-        mode = profile["mode"]
-
-        if mode == "platform":
-            # TODO: 未来平台化接入口
-            # 向 profile["endpoint_url"] 发送请求，由对方设备的 Agent 处理
-            logger.info("agent_reply: platform mode not yet implemented | receiver=%s", receiver_id)
-            return
-
-        # local 模式：用本地 LLM 生成回复（暂时用简单占位回复）
-        # 实际接入时，这里调用 chat_service.stream_chat，使用发送方的 API Key
-        await asyncio.sleep(1)  # 模拟思考延迟
-
-        reply_content = f"[{profile['name']}] 收到你的消息：「{content[:50]}」，我稍后处理。"
-
-        msg_id = str(uuid.uuid4())
-        ts = now_iso()
-        async with aiosqlite.connect(_DB_PATH) as db:
-            await db.execute(
-                """INSERT INTO messages (id, conversation_id, sender_id, receiver_id, content, msg_type, is_agent_reply, created_at)
-                   VALUES (?,?,?,?,?,?,1,?)""",
-                (msg_id, conv_id, receiver_id, sender["id"], reply_content, "text", ts),
-            )
-            await db.commit()
-
-        reply_msg = {
-            "id": msg_id,
-            "conversation_id": conv_id,
-            "sender_id": receiver_id,
-            "receiver_id": sender["id"],
-            "content": reply_content,
-            "msg_type": "text",
-            "is_agent_reply": 1,
-            "created_at": ts,
-        }
-        # 推送给发送方
-        await _ws_manager.broadcast_to_user(sender["id"], {"type": "new_message", "data": reply_msg})
-
-    except Exception as e:
-        logger.error("agent_auto_reply failed | %s", e)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
 # 用户搜索（添加联系人时用）
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -653,3 +585,198 @@ async def search_users(
         )
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Agent 收件箱
+# ══════════════════════════════════════════════════════════════════════════════
+
+class SendInboxMessageRequest(BaseModel):
+    """向某用户的 Agent 收件箱发送消息（通常由 forward_message 工具调用）。"""
+    owner_id: str                          # 收件人 user_id
+    msg_type: str = Field(default="agent_forward")  # agent_forward / task_remind / task_report / system
+    title: str = Field(default="", max_length=200)
+    content: str = Field(..., min_length=1, max_length=20000)
+    task_id: str | None = None
+
+
+@router.post("/agent-inbox/send", summary="向指定用户的 Agent 收件箱发送消息")
+async def send_inbox_message(body: SendInboxMessageRequest, current_user: CurrentUser):
+    """
+    由 Agent 起草页的 forward_message 工具调用，将消息投递到对方的 Agent 收件箱。
+    也可由定时任务服务调用（task_remind / task_report 类型）。
+    """
+    msg_id = str(uuid.uuid4())
+    ts = now_iso()
+
+    async with aiosqlite.connect(_DB_PATH) as db:
+        await db.execute(
+            """INSERT INTO agent_inbox_messages
+               (id, owner_id, sender_user_id, msg_type, title, content, task_id, created_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (msg_id, body.owner_id, current_user["id"], body.msg_type,
+             body.title, body.content, body.task_id, ts),
+        )
+        await db.commit()
+
+        # 查询发送方信息用于推送
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            """SELECT u.id, u.username, u.display_name,
+                      ap.name as agent_name
+               FROM users u LEFT JOIN agent_profiles ap ON ap.user_id=u.id
+               WHERE u.id=?""",
+            (current_user["id"],),
+        )
+        sender_info = dict(await cur.fetchone()) if cur else {}
+
+    inbox_msg = {
+        "id": msg_id,
+        "owner_id": body.owner_id,
+        "sender_user_id": current_user["id"],
+        "sender_info": sender_info,
+        "msg_type": body.msg_type,
+        "title": body.title,
+        "content": body.content,
+        "task_id": body.task_id,
+        "read_at": None,
+        "created_at": ts,
+    }
+
+    # 实时推送给收件人
+    await _ws_manager.broadcast_to_user(
+        body.owner_id,
+        {"type": "agent_inbox_message", "data": inbox_msg},
+    )
+    return inbox_msg
+
+
+@router.get("/agent-inbox", summary="获取我的 Agent 收件箱消息列表")
+async def list_inbox_messages(
+    current_user: CurrentUser,
+    limit: int = Query(default=50, le=200),
+    offset: int = Query(default=0, ge=0),
+    unread_only: bool = Query(default=False),
+):
+    uid = current_user["id"]
+    async with aiosqlite.connect(_DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+
+        where = "WHERE aim.owner_id=?"
+        params: list = [uid]
+        if unread_only:
+            where += " AND aim.read_at IS NULL"
+
+        cursor = await db.execute(
+            f"""SELECT aim.*,
+                       u.username as sender_username,
+                       u.display_name as sender_display_name,
+                       ap.name as sender_agent_name
+                FROM agent_inbox_messages aim
+                LEFT JOIN users u ON u.id = aim.sender_user_id
+                LEFT JOIN agent_profiles ap ON ap.user_id = aim.sender_user_id
+                {where}
+                ORDER BY aim.created_at DESC
+                LIMIT ? OFFSET ?""",
+            (*params, limit, offset),
+        )
+        rows = await cursor.fetchall()
+
+        # 未读总数
+        cur2 = await db.execute(
+            "SELECT COUNT(*) FROM agent_inbox_messages WHERE owner_id=? AND read_at IS NULL",
+            (uid,),
+        )
+        unread_count = (await cur2.fetchone())[0]
+
+        return {
+            "messages": [dict(r) for r in rows],
+            "unread_count": unread_count,
+            "total": len(rows),
+        }
+
+
+@router.get("/agent-inbox/unread-count", summary="获取 Agent 收件箱未读数")
+async def get_inbox_unread_count(current_user: CurrentUser):
+    async with aiosqlite.connect(_DB_PATH) as db:
+        cur = await db.execute(
+            "SELECT COUNT(*) FROM agent_inbox_messages WHERE owner_id=? AND read_at IS NULL",
+            (current_user["id"],),
+        )
+        count = (await cur.fetchone())[0]
+    return {"unread_count": count}
+
+
+@router.post("/agent-inbox/{msg_id}/read", summary="标记单条消息为已读")
+async def mark_inbox_message_read(msg_id: str, current_user: CurrentUser):
+    async with aiosqlite.connect(_DB_PATH) as db:
+        await db.execute(
+            "UPDATE agent_inbox_messages SET read_at=? WHERE id=? AND owner_id=?",
+            (now_iso(), msg_id, current_user["id"]),
+        )
+        await db.commit()
+    return {"ok": True}
+
+
+@router.post("/agent-inbox/read-all", summary="全部标记为已读")
+async def mark_all_inbox_read(current_user: CurrentUser):
+    async with aiosqlite.connect(_DB_PATH) as db:
+        await db.execute(
+            "UPDATE agent_inbox_messages SET read_at=? WHERE owner_id=? AND read_at IS NULL",
+            (now_iso(), current_user["id"]),
+        )
+        await db.commit()
+    return {"ok": True}
+
+
+@router.delete("/agent-inbox/{msg_id}", summary="删除收件箱消息")
+async def delete_inbox_message(msg_id: str, current_user: CurrentUser):
+    async with aiosqlite.connect(_DB_PATH) as db:
+        await db.execute(
+            "DELETE FROM agent_inbox_messages WHERE id=? AND owner_id=?",
+            (msg_id, current_user["id"]),
+        )
+        await db.commit()
+    return {"ok": True}
+
+
+async def push_inbox_message(
+    owner_id: str,
+    sender_user_id: str | None,
+    msg_type: str,
+    title: str,
+    content: str,
+    task_id: str | None = None,
+) -> dict:
+    """
+    内部工具函数：向指定用户的 Agent 收件箱写入一条消息并推送 WebSocket。
+    供定时任务服务（schedule.py）调用。
+    """
+    msg_id = str(uuid.uuid4())
+    ts = now_iso()
+
+    async with aiosqlite.connect(_DB_PATH) as db:
+        await db.execute(
+            """INSERT INTO agent_inbox_messages
+               (id, owner_id, sender_user_id, msg_type, title, content, task_id, created_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (msg_id, owner_id, sender_user_id, msg_type, title, content, task_id, ts),
+        )
+        await db.commit()
+
+    inbox_msg = {
+        "id": msg_id,
+        "owner_id": owner_id,
+        "sender_user_id": sender_user_id,
+        "msg_type": msg_type,
+        "title": title,
+        "content": content,
+        "task_id": task_id,
+        "read_at": None,
+        "created_at": ts,
+    }
+    await _ws_manager.broadcast_to_user(
+        owner_id,
+        {"type": "agent_inbox_message", "data": inbox_msg},
+    )
+    return inbox_msg

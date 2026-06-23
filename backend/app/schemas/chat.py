@@ -74,6 +74,14 @@ class ChatRequest(BaseModel):
             "供前端手动压缩按钮调用，压缩完成后通过 SSE 返回 compress_done 事件（含压缩后的 messages）。"
         ),
     )
+    max_loop_override: int | None = Field(
+        None,
+        description=(
+            "覆盖默认最大循环次数（MAX_LOOP_COUNT）。"
+            "用户点击「继续执行」时，前端传入更大的值（如 20、30），允许 Agent 继续工具调用。"
+            "为 null 时使用默认值（15）。"
+        ),
+    )
 
 
 # ── 组织阶段 Schemas ──────────────────────────────────────────────────────────

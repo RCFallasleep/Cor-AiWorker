@@ -17,6 +17,8 @@ export interface NavItem {
   label: string;
   href: string;
   icon: LucideIcon;
+  /** 用于动态角标的唯一 key，侧边栏通过此 key 注入未读数 */
+  badgeKey?: string;
 }
 
 export interface NavGroup {

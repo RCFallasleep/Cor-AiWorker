@@ -1,23 +1,25 @@
 "use client";
 
 import { usePathname, useRouter } from "next/navigation";
-import { useState } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
   MessageCircle,
   FolderKanban,
   LayoutDashboard,
+  Inbox,
   ChevronLeft,
   ChevronRight,
   LogOut,
 } from "lucide-react";
 import { useAuth } from "@/contexts/auth-context";
+import { agentInboxApi, createCollabWS } from "@/lib/api/client";
 
 interface CorworkTab {
   id: string;
   label: string;
   href: string;
   icon: React.ReactNode;
-  badge?: number;
+  badgeKey?: string;
 }
 
 const TABS: CorworkTab[] = [
@@ -26,7 +28,13 @@ const TABS: CorworkTab[] = [
     label: "消息",
     href: "/corwork/messages",
     icon: <MessageCircle size={20} strokeWidth={1.8} />,
-    badge: 0,
+  },
+  {
+    id: "agent-inbox",
+    label: "收件箱",
+    href: "/corwork/agent-inbox",
+    icon: <Inbox size={20} strokeWidth={1.8} />,
+    badgeKey: "agent_inbox",
   },
   {
     id: "projects",
@@ -49,6 +57,52 @@ export function CorworkSidebar() {
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(false);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
+
+  // 动态角标：badgeKey → 未读数
+  const [badges, setBadges] = useState<Record<string, number>>({});
+  const wsRef = useRef<WebSocket | null>(null);
+
+  // 拉取 Agent 收件箱未读数
+  const fetchInboxUnread = useCallback(async () => {
+    if (!user) return;
+    try {
+      const { unread_count } = await agentInboxApi.unreadCount();
+      setBadges((prev) => ({ ...prev, agent_inbox: unread_count }));
+    } catch { /* 静默 */ }
+  }, [user]);
+
+  useEffect(() => {
+    fetchInboxUnread();
+  }, [fetchInboxUnread]);
+
+  // WebSocket 实时监听新收件箱消息
+  useEffect(() => {
+    if (!user) return;
+    wsRef.current?.close();
+
+    const ws = createCollabWS((data) => {
+      const payload = data as { type: string };
+      if (payload.type === "agent_inbox_message") {
+        setBadges((prev) => ({
+          ...prev,
+          agent_inbox: (prev.agent_inbox ?? 0) + 1,
+        }));
+      }
+    });
+    wsRef.current = ws;
+    return () => { ws?.close(); };
+  }, [user]);
+
+  // 进入收件箱页面时清零角标（已在页面内标记已读）
+  useEffect(() => {
+    if (pathname.startsWith("/corwork/agent-inbox")) {
+      // 延迟一点，等页面加载完成后再清零
+      const timer = setTimeout(() => {
+        setBadges((prev) => ({ ...prev, agent_inbox: 0 }));
+      }, 800);
+      return () => clearTimeout(timer);
+    }
+  }, [pathname]);
 
   // 只在 /corwork 路径下显示（think-tank 除外）
   const isCorwork = pathname.startsWith("/corwork") && !pathname.startsWith("/corwork/think-tank");
@@ -107,98 +161,113 @@ export function CorworkSidebar() {
         </button>
 
         {/* Tab 列表 */}
-        {TABS.map((tab) => {
+        {TABS.map((tab, idx) => {
           const isActive = activeId === tab.id;
           const isHovered = hoveredId === tab.id;
-          const showBadge = tab.badge !== undefined && tab.badge > 0;
+          const badgeCount = tab.badgeKey ? (badges[tab.badgeKey] ?? 0) : 0;
+          const showBadge = badgeCount > 0;
+
+          // 「收件箱」和「项目」之间加一条分割线
+          const showDivider = idx > 0 && TABS[idx - 1].id === "agent-inbox";
 
           return (
-            <button
-              key={tab.id}
-              onClick={() => router.push(tab.href)}
-              onMouseEnter={() => setHoveredId(tab.id)}
-              onMouseLeave={() => setHoveredId(null)}
-              title={tab.label}
-              style={{
-                position: "relative",
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: "4px",
-                width: "52px",
-                minHeight: "52px",
-                padding: "8px 4px",
-                borderRadius: "10px",
-                border: "none",
-                cursor: "pointer",
-                outline: "none",
-                transition: "background-color 0.15s ease",
-                backgroundColor: isActive
-                  ? "var(--sidebar-active)"
-                  : isHovered
-                  ? "var(--sidebar-hover)"
-                  : "transparent",
-                color: isActive ? "var(--text-primary)" : "var(--text-secondary)",
-              }}
-            >
-              {/* 激活左侧指示条 */}
-              {isActive && (
-                <span
+            <div key={tab.id} style={{ width: "100%", display: "flex", flexDirection: "column", alignItems: "center" }}>
+              {showDivider && (
+                <div
                   style={{
-                    position: "absolute",
-                    left: 0,
-                    top: "50%",
-                    transform: "translateY(-50%)",
-                    width: "3px",
-                    height: "20px",
-                    borderRadius: "0 3px 3px 0",
-                    backgroundColor: "var(--accent)",
+                    width: "32px", height: "1px",
+                    backgroundColor: "var(--border-subtle)",
+                    margin: "4px 0",
+                    opacity: 0.5,
                   }}
                 />
               )}
-
-              {/* 图标 + 角标 */}
-              <div style={{ position: "relative", display: "flex", alignItems: "center", justifyContent: "center", opacity: isActive ? 1 : 0.6 }}>
-                {tab.icon}
-                {showBadge && (
+              <button
+                onClick={() => router.push(tab.href)}
+                onMouseEnter={() => setHoveredId(tab.id)}
+                onMouseLeave={() => setHoveredId(null)}
+                title={tab.label}
+                style={{
+                  position: "relative",
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: "4px",
+                  width: "52px",
+                  minHeight: "52px",
+                  padding: "8px 4px",
+                  borderRadius: "10px",
+                  border: "none",
+                  cursor: "pointer",
+                  outline: "none",
+                  transition: "background-color 0.15s ease",
+                  backgroundColor: isActive
+                    ? "var(--sidebar-active)"
+                    : isHovered
+                    ? "var(--sidebar-hover)"
+                    : "transparent",
+                  color: isActive ? "var(--text-primary)" : "var(--text-secondary)",
+                }}
+              >
+                {/* 激活左侧指示条 */}
+                {isActive && (
                   <span
                     style={{
                       position: "absolute",
-                      top: "-5px",
-                      right: "-7px",
-                      minWidth: "15px",
-                      height: "15px",
-                      padding: "0 3px",
-                      borderRadius: "8px",
-                      backgroundColor: "#f53f3f",
-                      color: "#fff",
-                      fontSize: "9px",
-                      fontWeight: 700,
-                      lineHeight: "15px",
-                      textAlign: "center",
-                      boxSizing: "border-box",
-                      boxShadow: "0 0 0 2px #0d0d0d",
+                      left: 0,
+                      top: "50%",
+                      transform: "translateY(-50%)",
+                      width: "3px",
+                      height: "20px",
+                      borderRadius: "0 3px 3px 0",
+                      backgroundColor: "var(--accent)",
                     }}
-                  >
-                    {tab.badge! > 99 ? "99+" : tab.badge}
-                  </span>
+                  />
                 )}
-              </div>
 
-              {/* 文字标签 */}
-              <span
-                style={{
-                  fontSize: "10px",
-                  fontWeight: isActive ? 600 : 400,
-                  lineHeight: 1,
-                  whiteSpace: "nowrap",
-                  color: isActive ? "var(--text-primary)" : "var(--text-muted)",
-                }}
-              >
-                {tab.label}
-              </span>
-            </button>
+                {/* 图标 + 角标 */}
+                <div style={{ position: "relative", display: "flex", alignItems: "center", justifyContent: "center", opacity: isActive ? 1 : 0.6 }}>
+                  {tab.icon}
+                  {showBadge && (
+                    <span
+                      style={{
+                        position: "absolute",
+                        top: "-5px",
+                        right: "-7px",
+                        minWidth: "15px",
+                        height: "15px",
+                        padding: "0 3px",
+                        borderRadius: "8px",
+                        backgroundColor: "#f53f3f",
+                        color: "#fff",
+                        fontSize: "9px",
+                        fontWeight: 700,
+                        lineHeight: "15px",
+                        textAlign: "center",
+                        boxSizing: "border-box",
+                        boxShadow: "0 0 0 2px #0d0d0d",
+                      }}
+                    >
+                      {badgeCount > 99 ? "99+" : badgeCount}
+                    </span>
+                  )}
+                </div>
+
+                {/* 文字标签 */}
+                <span
+                  style={{
+                    fontSize: "10px",
+                    fontWeight: isActive ? 600 : 400,
+                    lineHeight: 1,
+                    whiteSpace: "nowrap",
+                    color: isActive ? "var(--text-primary)" : "var(--text-muted)",
+                  }}
+                >
+                  {tab.label}
+                </span>
+              </button>
+            </div>
           );
         })}
       </aside>
@@ -277,7 +346,6 @@ export function CorworkSidebar() {
         title={collapsed ? "展开协作栏" : "收起协作栏"}
         style={{
           position: "absolute",
-          // 展开时：贴在侧边栏右边缘内侧底部；收起时：从右边缘伸出
           right: collapsed ? "-20px" : "-12px",
           bottom: "20px",
           display: "flex",

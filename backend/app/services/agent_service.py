@@ -15,8 +15,8 @@ from app.tools.registry import tool_registry
 
 logger = logging.getLogger(__name__)
 
-# Agent 最大自循环次数，防止无限循环
-MAX_LOOP_COUNT = 15
+# Agent 默认最大自循环次数，防止无限循环
+MAX_LOOP_COUNT = 10
 
 # ── 模型上下文窗口大小映射表 ──
 # 未知模型默认 128000（保守估计）
@@ -300,6 +300,9 @@ async def _agent_loop_openai(body: ChatRequest) -> AsyncGenerator[str, None]:
             yield chunk
         return
 
+    # 支持用户点击「继续执行」时传入更大的上限
+    effective_max_loop = body.max_loop_override if (body.max_loop_override and body.max_loop_override > 0) else MAX_LOOP_COUNT
+
     total_input_tokens = 0
     total_output_tokens = 0
 
@@ -323,8 +326,8 @@ async def _agent_loop_openai(body: ChatRequest) -> AsyncGenerator[str, None]:
     _last_tool_names: list[str] = []
     _same_tool_repeat_count = 0
 
-    for loop_index in range(MAX_LOOP_COUNT):
-        logger.debug("agent loop | round=%d/%d", loop_index + 1, MAX_LOOP_COUNT)
+    for loop_index in range(effective_max_loop):
+        logger.debug("agent loop | round=%d/%d", loop_index + 1, effective_max_loop)
 
         # ── 第一层压缩触发：主动检测 90% 阈值 ──
         if total_input_tokens > 0 and total_input_tokens / context_limit > 0.90:
@@ -514,6 +517,10 @@ async def _agent_loop_openai(body: ChatRequest) -> AsyncGenerator[str, None]:
                 if body.agent_self_id:
                     tool_args.setdefault("target_user_id", body.agent_self_id)
 
+            # forward_message / send_direct_message：自动注入 sender_id，避免 LLM 填错或遗漏
+            if tool_name in ("forward_message", "send_direct_message") and body.user_id:
+                tool_args.setdefault("sender_id", body.user_id)
+
             logger.info("agent tool_call | name=%s args=%s", tool_name, tool_args)
 
             yield _sse({
@@ -579,21 +586,23 @@ async def _agent_loop_openai(body: ChatRequest) -> AsyncGenerator[str, None]:
             messages.append({"role": "user", "content": interrupt_msg})
             _same_tool_repeat_count = 0
 
-    # ── 超出最大循环次数 ──
-    logger.warning("agent loop exceeded max rounds | max=%d", MAX_LOOP_COUNT)
+    # ── 达到最大循环次数：推 loop_limit 事件，让用户决定是否继续 ──
+    logger.warning("agent loop reached max rounds | max=%d", effective_max_loop)
 
-    run_log.total_rounds = MAX_LOOP_COUNT
+    run_log.total_rounds = effective_max_loop
     run_log.total_input_tokens = total_input_tokens
     run_log.total_output_tokens = total_output_tokens
     run_log.total_duration_ms = int((time.monotonic() - run_start_ms) * 1000)
-    run_log.status = "error"
-    run_log.error_message = f"超出最大循环次数（{MAX_LOOP_COUNT} 轮）"
+    run_log.status = "loop_limit"
+    run_log.error_message = f"达到最大循环次数（{effective_max_loop} 轮），等待用户决定是否继续"
     run_log.finished_at = datetime.now()
     await log_store.finish_run(run_log)
 
+    # 推 loop_limit 事件（前端据此显示「继续执行」提示条）
     yield _sse({
-        "type":    "delta",
-        "content": f"\n\n[Agent 已达最大循环次数（{MAX_LOOP_COUNT} 轮），强制终止。]",
+        "type":       "loop_limit",
+        "loop_count": effective_max_loop,
+        "message":    f"Agent 已完成 {effective_max_loop} 次工具调用，是否继续执行？",
     })
     yield _sse({
         "type":          "done",

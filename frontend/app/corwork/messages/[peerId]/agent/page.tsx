@@ -60,21 +60,37 @@ function buildSystemPrompt(
 你的职责：
 1. 帮助 ${myName} 起草、润色发给 ${peerName} 的消息，使其更清晰、专业或友好
 2. 根据 ${peerName} 的背景信息，给出沟通建议
-3. 当 ${myName} 确认消息内容后，调用 forward_message 工具将消息发送给 ${peerName}
+3. 当 ${myName} 确认消息内容后，根据其意图选择合适的发送工具将消息发出
 
 关于 ${peerName} 的公开背景信息：
 ${memorySection}
 
-转发消息工具说明（forward_message）：
-- 调用时必须传入：
-  - receiver_id: "${peerUserId}"（固定，即 ${peerName} 的用户 ID）
-  - sender_id: "${senderUserId}"（固定，即 ${myName} 的用户 ID）
+## 发送工具说明（二选一）
+
+### 工具 A：forward_message（发给对方 Agent 收件箱）
+- 适用场景：${myName} 希望以「Agent 转发」形式发送，对方会在 Agent 收件箱中看到，聊天列表显示紫色气泡
+- 典型用语：「发给对方 Agent」「发到收件箱」「让对方 Agent 处理」「Agent 转发」
+- 调用参数：
+  - receiver_id: "${peerUserId}"（固定值，不可更改）
   - content: 最终确认的消息内容
+  - sender_id: 由系统自动注入，无需填写
+
+### 工具 B：send_direct_message（直接发给对方本人）
+- 适用场景：${myName} 希望以普通消息形式发送，对方聊天列表看到普通文字气泡，感知不到是 Agent 代发
+- 典型用语：「直接发给他/她」「发给本人」「普通消息」「不要走 Agent」「就当我自己发的」
+- 调用参数：
+  - receiver_id: "${peerUserId}"（固定值，不可更改）
+  - content: 最终确认的消息内容
+  - sender_id: 由系统自动注入，无需填写
+
+## 决策规则
+- 如果 ${myName} 没有明确说明发送方式，**主动询问**：「你希望以普通消息直接发给 ${peerName}，还是通过 Agent 收件箱转发？」
+- 获得明确意图后再调用对应工具
 - 发送前请先向 ${myName} 展示消息内容并确认，获得明确同意后再调用
 
 注意：
 - 你代表 ${myName} 说话，起草的消息应以第一人称（"我"）表达
-- 发送成功后，消息会出现在 ${peerName} 的聊天列表中，标注为「Agent 转发」`;
+- sender_id 两个工具都由系统自动注入，无需你填写`;
 }
 
 // ── 主组件 ────────────────────────────────────────────────────────────────────
@@ -213,6 +229,7 @@ export default function AgentDraftPage() {
           ],
           stream: true,
           session_id: `agent-draft-${peerId}`,
+          user_id: user.id,
         }),
         signal: abortRef.current.signal,
       });
@@ -604,26 +621,47 @@ function DraftMessageBubble({
 function ToolCallCard({ tc, peerName }: { tc: ToolCallInfo; peerName: string }) {
   const [open, setOpen] = useState(false);
   const isForward = tc.name === "forward_message";
+  const isDirect = tc.name === "send_direct_message";
+  const isSendTool = isForward || isDirect;
   const isDone = !!tc.result;
   const isSuccess = isDone && tc.result?.startsWith("✅");
+
+  // 颜色主题：forward=紫色，direct=绿色，其他=灰色
+  const accentColor = isForward ? "#818cf8" : isDirect ? "#22c55e" : "#6366f1";
+  const borderColor = isForward
+    ? "rgba(99,102,241,0.3)"
+    : isDirect
+    ? "rgba(34,197,94,0.3)"
+    : "var(--border-subtle)";
+  const bgColor = isForward
+    ? "rgba(99,102,241,0.05)"
+    : isDirect
+    ? "rgba(34,197,94,0.05)"
+    : "rgba(99,102,241,0.03)";
+
+  const label = isForward
+    ? `📨 Agent 转发给 ${peerName}`
+    : isDirect
+    ? `💬 直接发给 ${peerName}`
+    : tc.name;
 
   return (
     <div style={{
       borderRadius: "8px",
-      border: `1px solid ${isForward ? "rgba(99,102,241,0.3)" : "var(--border-subtle)"}`,
-      backgroundColor: isForward ? "rgba(99,102,241,0.05)" : "rgba(99,102,241,0.03)",
+      border: `1px solid ${borderColor}`,
+      backgroundColor: bgColor,
       overflow: "hidden",
     }}>
       <button
         onClick={() => setOpen((v) => !v)}
         style={{ width: "100%", display: "flex", alignItems: "center", gap: "6px", padding: "6px 10px", background: "none", border: "none", cursor: "pointer", textAlign: "left" }}
       >
-        {isForward
-          ? <Zap size={11} color="#818cf8" />
-          : <Wrench size={11} color="#6366f1" />
+        {isSendTool
+          ? <Zap size={11} color={accentColor} />
+          : <Wrench size={11} color={accentColor} />
         }
-        <span style={{ fontSize: "12px", color: "#818cf8", fontWeight: 500, flex: 1 }}>
-          {isForward ? `📨 发送给 ${peerName}` : tc.name}
+        <span style={{ fontSize: "12px", color: accentColor, fontWeight: 500, flex: 1 }}>
+          {label}
         </span>
         <span style={{
           fontSize: "10px", padding: "1px 6px", borderRadius: "10px",
@@ -637,15 +675,17 @@ function ToolCallCard({ tc, peerName }: { tc: ToolCallInfo; peerName: string }) 
 
       {open && (
         <div style={{ padding: "0 10px 8px", display: "flex", flexDirection: "column", gap: "4px" }}>
-          {isForward && tc.args.content && (
+          {isSendTool && tc.args.content && (
             <>
-              <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>消息内容：</div>
-              <div style={{ padding: "6px 8px", borderRadius: "6px", backgroundColor: "var(--background)", fontSize: "12px", color: "var(--text-primary)", whiteSpace: "pre-wrap", wordBreak: "break-word", borderLeft: "2px solid #818cf8" }}>
+              <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>
+                {isForward ? "转发内容（Agent 收件箱）：" : "发送内容（普通消息）："}
+              </div>
+              <div style={{ padding: "6px 8px", borderRadius: "6px", backgroundColor: "var(--background)", fontSize: "12px", color: "var(--text-primary)", whiteSpace: "pre-wrap", wordBreak: "break-word", borderLeft: `2px solid ${accentColor}` }}>
                 {tc.args.content as string}
               </div>
             </>
           )}
-          {!isForward && (
+          {!isSendTool && (
             <>
               <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>参数：</div>
               <pre style={{ margin: 0, padding: "6px 8px", borderRadius: "6px", backgroundColor: "var(--background)", fontSize: "11px", color: "var(--text-primary)", overflowX: "auto", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>

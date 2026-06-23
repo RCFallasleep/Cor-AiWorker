@@ -11,7 +11,7 @@ interface MermaidPreviewProps {
 
 /**
  * Mermaid 图表预览组件（流程图、时序图、架构图等）
- * 通过 iframe + srcdoc 沙箱渲染，从 unpkg CDN 加载 Mermaid
+ * 通过 iframe + srcdoc 沙箱渲染，加载本地 /mermaid.min.js（UMD 版本）
  */
 export function MermaidPreview({ code, isDark = true, onRetry }: MermaidPreviewProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
@@ -53,27 +53,28 @@ export function MermaidPreview({ code, isDark = true, onRetry }: MermaidPreviewP
 </head>
 <body>
 <div id="diagram" class="mermaid">${code.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</div>
-<script type="module">
-  import mermaid from 'https://unpkg.com/mermaid@11/dist/mermaid.esm.min.mjs';
-  try {
-    mermaid.initialize({
-      startOnLoad: true,
-      theme: '${mermaidTheme}',
-      securityLevel: 'loose',
-      fontFamily: 'ui-sans-serif, system-ui, sans-serif',
-    });
-    await mermaid.run();
-    // 通知父页面高度
-    setTimeout(() => {
-      window.parent.postMessage({
-        type: 'mermaid-ready',
-        height: document.body.scrollHeight
-      }, '*');
-    }, 100);
-  } catch(e) {
-    document.getElementById('diagram').innerHTML = '<div class="err">渲染失败：' + e.message + '</div>';
-    window.parent.postMessage({ type: 'mermaid-error', message: e.message }, '*');
-  }
+<script src="/mermaid.min.js"></script>
+<script>
+  (async function() {
+    try {
+      mermaid.initialize({
+        startOnLoad: false,
+        theme: '${mermaidTheme}',
+        securityLevel: 'loose',
+        fontFamily: 'ui-sans-serif, system-ui, sans-serif',
+      });
+      await mermaid.run({ nodes: [document.getElementById('diagram')] });
+      setTimeout(() => {
+        window.parent.postMessage({
+          type: 'mermaid-ready',
+          height: document.body.scrollHeight
+        }, '*');
+      }, 100);
+    } catch(e) {
+      document.getElementById('diagram').innerHTML = '<div class="err">渲染失败：' + e.message + '</div>';
+      window.parent.postMessage({ type: 'mermaid-error', message: e.message }, '*');
+    }
+  })();
 </script>
 </body>
 </html>`;

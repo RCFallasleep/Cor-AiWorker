@@ -9,7 +9,6 @@ const AUTO_COLLAPSE_WIDTH = 900; // 小于此宽度自动折叠
 
 export function Sidebar() {
   const [collapsed, setCollapsed] = useState(false);
-  // 记录用户是否手动操作过，手动操作后不再自动响应
   const [userOverride, setUserOverride] = useState(false);
 
   const handleResize = useCallback(() => {
@@ -22,19 +21,16 @@ export function Sidebar() {
   }, [userOverride]);
 
   useEffect(() => {
-    // 初始化时检查一次
     handleResize();
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
   }, [handleResize]);
 
-  // 用户手动点击折叠按钮
   const handleToggle = () => {
     setUserOverride(true);
     setCollapsed((v) => !v);
   };
 
-  // 窗口恢复到宽屏时，重置 override，让自动逻辑重新接管
   useEffect(() => {
     const onResize = () => {
       if (window.innerWidth >= AUTO_COLLAPSE_WIDTH) {
@@ -123,13 +119,13 @@ export function Sidebar() {
       {/* 导航菜单 */}
       <nav style={{ flex: 1, overflowY: "auto", padding: "4px 0" }}>
         {navGroups.map((group, index) => (
-          <NavGroupSection
-            key={group.id}
-            group={group}
-            collapsed={collapsed}
-            isFirst={index === 0}
-          />
-        ))}
+            <NavGroupSection
+              key={group.id}
+              group={group}
+              collapsed={collapsed}
+              isFirst={index === 0}
+            />
+          ))}
       </nav>
 
       {/* 底部状态栏 */}

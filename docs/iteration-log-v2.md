@@ -39,7 +39,7 @@
 
 **状态**：进行中
 **开始时间**：2026-06-18
-**最后更新**：2026-06-23（Phase 8.6 完成）
+**最后更新**：2026-06-22（Phase 8.7 工具调用分页执行）
 
 ---
 
@@ -47,6 +47,9 @@
 
 | 日期 | 模块 | 内容 | 负责人 |
 |------|------|------|--------|
+| 2026-06-22 | 后端 | Phase 8.7 工具调用分页执行：MAX_LOOP_COUNT 10→10（默认），达到上限时推 loop_limit SSE 事件（含 loop_count），不再强制截止；ChatRequest 新增 max_loop_override 字段 | - |
+| 2026-06-22 | 前端 | Phase 8.7 工具调用分页执行：use-chat-stream.ts 新增 LoopLimitEvent 接口，buildRequestBody 新增 maxLoopOverride 参数 | - |
+| 2026-06-22 | 前端 | Phase 8.7 工具调用分页执行：chat/page.tsx 新增 loopLimitCount state + continueTimesRef，handleContinueLoop 回调（每次 +10 轮），LoopLimitBanner 内联组件（黄色提示条 + 继续/停止按钮） | - |
 | 2026-06-22 | 前端 | Bugfix：chart-preview.tsx ECharts option 解析三级 fallback（JSON.parse → eval → new Function），修复 AI 输出纯 JSON 时渲染失败的问题 | - |
 | 2026-06-23 | 后端 | Phase 8.6 上下文管理：新增 MODEL_CONTEXT_LIMITS 映射表（30+ 模型），_get_context_limit() 前缀匹配，done 事件新增 context_limit 字段 | - |
 | 2026-06-23 | 后端 | Phase 8.6 上下文管理：新增 _compress_messages()（LLM 智能摘要，max_tokens=1000，失败降级截断），两层触发（90% 主动 + BadRequestError 被动），compress_only 手动压缩模式 | - |

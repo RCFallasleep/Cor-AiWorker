@@ -258,3 +258,61 @@ fun ChatScreen(
         }
     }
 }
+
+// ── 消息气泡 ──────────────────────────────────────────────────────────────────
+
+@Composable
+private fun MessageBubble(msg: Message, isMine: Boolean) {
+    val bubbleColor = if (isMine)
+        MaterialTheme.colorScheme.primary
+    else
+        MaterialTheme.colorScheme.surfaceVariant
+
+    val textColor = if (isMine)
+        Color.White
+    else
+        MaterialTheme.colorScheme.onSurface
+
+    val timeStr = try {
+        val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.getDefault()).apply {
+            timeZone = TimeZone.getTimeZone("UTC")
+        }
+        val date = sdf.parse(msg.createdAt.substringBefore(".").substringBefore("Z"))
+        SimpleDateFormat("HH:mm", Locale.getDefault()).format(date ?: Date())
+    } catch (_: Exception) { "" }
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = if (isMine) Alignment.End else Alignment.Start
+    ) {
+        Box(
+            modifier = Modifier
+                .widthIn(max = 280.dp)
+                .clip(
+                    RoundedCornerShape(
+                        topStart = 16.dp,
+                        topEnd = 16.dp,
+                        bottomStart = if (isMine) 16.dp else 4.dp,
+                        bottomEnd = if (isMine) 4.dp else 16.dp
+                    )
+                )
+                .background(bubbleColor)
+                .padding(horizontal = 14.dp, vertical = 10.dp)
+        ) {
+            Text(
+                text = msg.content,
+                color = textColor,
+                fontSize = 14.sp,
+                lineHeight = 20.sp
+            )
+        }
+        if (timeStr.isNotEmpty()) {
+            Text(
+                text = timeStr,
+                fontSize = 10.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                modifier = Modifier.padding(top = 2.dp, start = 4.dp, end = 4.dp)
+            )
+        }
+    }
+}

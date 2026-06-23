@@ -39,3 +39,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# 第三方库本地缓存（通过 scripts/download-libs.sh 下载，不提交到 git）
+/public/echarts.min.js
+/public/mermaid.min.js

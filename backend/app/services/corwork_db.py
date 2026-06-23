@@ -247,6 +247,37 @@ async def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_runs_task ON task_runs(task_id, started_at)"
         )
 
+        # ── Agent 收件箱消息表 ────────────────────────────────────────────────
+        # 存储发给「我的 Agent」的消息（来自其他用户的 Agent 转发，或系统/定时任务提醒）
+        # msg_type: "agent_forward" | "task_remind" | "task_report" | "system"
+        # sender_type: "agent" | "system" | "task"
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS agent_inbox_messages (
+                id              TEXT PRIMARY KEY,
+                -- 收件人（消息归属的用户）
+                owner_id        TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                -- 发送方用户 ID（agent_forward 时为对方用户 ID，task/system 时为 owner_id 自身）
+                sender_user_id  TEXT REFERENCES users(id),
+                -- 消息类型：agent_forward / task_remind / task_report / system
+                msg_type        TEXT NOT NULL DEFAULT 'agent_forward',
+                -- 消息标题（任务提醒/汇报时有值）
+                title           TEXT NOT NULL DEFAULT '',
+                -- 消息正文（Markdown）
+                content         TEXT NOT NULL DEFAULT '',
+                -- 关联的定时任务 ID（task_remind/task_report 时有值）
+                task_id         TEXT REFERENCES scheduled_tasks(id),
+                -- 是否已读
+                read_at         TEXT,
+                created_at      TEXT NOT NULL
+            )
+        """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_inbox_owner ON agent_inbox_messages(owner_id, created_at)"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_inbox_unread ON agent_inbox_messages(owner_id, read_at)"
+        )
+
         await db.commit()
 
         # ── 迁移检测：补全旧库缺失的表/列 ────────────────────────────────────
@@ -358,6 +389,33 @@ async def init_db() -> None:
             """)
             await db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_runs_task ON task_runs(task_id, started_at)"
+            )
+            await db.commit()
+
+        # agent_inbox_messages 表（v5 新增）
+        cur = await db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='agent_inbox_messages'"
+        )
+        if not await cur.fetchone():
+            logger.info("corwork_db: migrating — creating agent_inbox_messages table")
+            await db.execute("""
+                CREATE TABLE agent_inbox_messages (
+                    id              TEXT PRIMARY KEY,
+                    owner_id        TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    sender_user_id  TEXT REFERENCES users(id),
+                    msg_type        TEXT NOT NULL DEFAULT 'agent_forward',
+                    title           TEXT NOT NULL DEFAULT '',
+                    content         TEXT NOT NULL DEFAULT '',
+                    task_id         TEXT,
+                    read_at         TEXT,
+                    created_at      TEXT NOT NULL
+                )
+            """)
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_inbox_owner ON agent_inbox_messages(owner_id, created_at)"
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_inbox_unread ON agent_inbox_messages(owner_id, read_at)"
             )
             await db.commit()
 

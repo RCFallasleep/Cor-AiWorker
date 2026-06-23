@@ -125,6 +125,23 @@ export interface Conversation {
   unread_count: number;
 }
 
+export interface AgentInboxMessage {
+  id: string;
+  owner_id: string;
+  sender_user_id: string | null;
+  /** agent_forward | task_remind | task_report | system */
+  msg_type: "agent_forward" | "task_remind" | "task_report" | "system";
+  title: string;
+  content: string;
+  task_id: string | null;
+  read_at: string | null;
+  created_at: string;
+  // 联表字段（列表接口返回）
+  sender_username?: string;
+  sender_display_name?: string;
+  sender_agent_name?: string;
+}
+
 // ── 请求工具 ──────────────────────────────────────────────────────────────────
 
 async function request<T>(
@@ -346,6 +363,57 @@ export const skillsApi = {
       method: "PATCH",
       body: JSON.stringify({ enabled }),
     }, false);
+  },
+};
+
+// ── Agent 收件箱 API ──────────────────────────────────────────────────────────
+
+export const agentInboxApi = {
+  /** 获取收件箱消息列表（含未读数） */
+  async list(opts?: { limit?: number; offset?: number; unreadOnly?: boolean }): Promise<{
+    messages: AgentInboxMessage[];
+    unread_count: number;
+    total: number;
+  }> {
+    const params = new URLSearchParams();
+    if (opts?.limit) params.set("limit", String(opts.limit));
+    if (opts?.offset) params.set("offset", String(opts.offset));
+    if (opts?.unreadOnly) params.set("unread_only", "true");
+    return request(`/v1/collab/agent-inbox?${params}`);
+  },
+
+  /** 获取未读数（轻量接口，用于角标） */
+  async unreadCount(): Promise<{ unread_count: number }> {
+    return request("/v1/collab/agent-inbox/unread-count");
+  },
+
+  /** 标记单条已读 */
+  async markRead(msgId: string): Promise<void> {
+    await request(`/v1/collab/agent-inbox/${msgId}/read`, { method: "POST" });
+  },
+
+  /** 全部标记已读 */
+  async markAllRead(): Promise<void> {
+    await request("/v1/collab/agent-inbox/read-all", { method: "POST" });
+  },
+
+  /** 删除一条消息 */
+  async delete(msgId: string): Promise<void> {
+    await request(`/v1/collab/agent-inbox/${msgId}`, { method: "DELETE" });
+  },
+
+  /** 向指定用户的 Agent 收件箱发送消息（Agent 起草页 forward_message 工具调用） */
+  async send(data: {
+    owner_id: string;
+    msg_type?: string;
+    title?: string;
+    content: string;
+    task_id?: string;
+  }): Promise<AgentInboxMessage> {
+    return request("/v1/collab/agent-inbox/send", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
   },
 };
 

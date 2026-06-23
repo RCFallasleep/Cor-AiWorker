@@ -82,6 +82,13 @@ function ChatPageInner() {
   // 是否正在压缩（显示 compressing 状态）
   const [isCompressing, setIsCompressing] = useState(false);
 
+  // ── 工具调用次数上限（Phase 8.7）──
+  // 当前触发 loop_limit 的累计轮次数（null 表示未触发）
+  // 用户每次点击「继续执行」后清空，下次触发时重新记录
+  const [loopLimitCount, setLoopLimitCount] = useState<number | null>(null);
+  // 用户已点击「继续执行」的次数（决定下次 maxLoopOverride = (continueTimes+1)*10 + 初始10）
+  const continueTimesRef = useRef(0);
+
   const [conversations, setConversations] = useState<ConversationRow[]>([]);
   const [currentConvId, setCurrentConvId] = useState<string | null>(null);
   const conversationIdRef = useRef<string | null>(null);
@@ -215,6 +222,9 @@ function ChatPageInner() {
     setTotalInputTokens(0);
     setContextLimit(128000);
     setIsCompressing(false);
+    // 新对话时重置 loop_limit 状态
+    setLoopLimitCount(null);
+    continueTimesRef.current = 0;
     // 新对话时清除持久化的对话 id，保留 Agent 选择
     localStorage.removeItem(LAST_CONV_KEY);
   }, []);
@@ -310,6 +320,7 @@ function ChatPageInner() {
           });
           if (newContextLimit) setContextLimit(newContextLimit);
           setIsCompressing(false);
+          // 注意：loopLimitCount 由 onAgentEvent 的 loop_limit 事件设置，onDone 不清除
 
           // 从 ref 直接读取最终 agentSteps（同步可靠）
           const finalAgentSteps = agentStepsRef.current.length > 0
@@ -350,8 +361,13 @@ function ChatPageInner() {
           setErrorBanner(errMsg);
           setMessages((prev) => prev.filter((m) => m.id !== assistantPlaceholderId));
         },
-        // onAgentEvent：tool_call / tool_result / compressing / compress_done
+        // onAgentEvent：tool_call / tool_result / compressing / compress_done / loop_limit
         (event: AgentEvent) => {
+          if (event.type === "loop_limit") {
+            // 工具调用达到上限，显示「继续执行」提示条
+            setLoopLimitCount(event.loop_count);
+            return;
+          }
           if (event.type === "tool_call") {
             const stepId = `step-${Date.now()}-${Math.random().toString(36).slice(2)}`;
             const thinkingText = thinkingBufRef.current.trim().slice(0, 80) || undefined;
@@ -432,10 +448,97 @@ function ChatPageInner() {
         user?.id ?? null,                  // user_id（供 scheduler 等工具注入）
         user?.id ?? null,                  // agent_self_id（暂时与 user_id 相同）
         false,                             // compressOnly
+        null,                              // maxLoopOverride（普通发送时不覆盖）
       );
     },
     [messages, currentModel, currentAgent, sendMessage, streaming, clientContext, updateAgentSteps, toolNames, user, contextLimit, totalInputTokens]
   );
+
+  // ── 继续执行回调（用户点击「继续执行」后触发）──
+  const handleContinueLoop = useCallback(async () => {
+    if (!currentModel || streaming) return;
+    continueTimesRef.current += 1;
+    // 每次继续 +10 轮：第1次=20，第2次=30，以此类推
+    const maxLoopOverride = (continueTimesRef.current + 1) * 10;
+    setLoopLimitCount(null); // 清除提示条，开始执行
+
+    // 重用当前 AI 消息（不新建），继续追加 agentSteps
+    // 注意：不新建 userMsg，直接用当前 messages 继续
+    await sendMessage(
+      currentModel,
+      messages,
+      "",                    // 空 userContent（继续执行不需要新用户消息）
+      // onDelta：继续追加到最后一条 assistant 消息
+      (delta) => {
+        setMessages((prev) => {
+          const lastAi = [...prev].reverse().find((m) => m.role === "assistant");
+          if (!lastAi) return prev;
+          return prev.map((m) => m.id === lastAi.id ? { ...m, content: m.content + delta } : m);
+        });
+      },
+      // onDone
+      async (inputTokens, outputTokens, newContextLimit) => {
+        setTotalInputTokens((prev) => prev + inputTokens);
+        if (newContextLimit) setContextLimit(newContextLimit);
+        setIsCompressing(false);
+      },
+      // onError
+      (errMsg) => { setErrorBanner(errMsg); },
+      // onAgentEvent
+      (event: AgentEvent) => {
+        if (event.type === "loop_limit") {
+          setLoopLimitCount(event.loop_count);
+          return;
+        }
+        if (event.type === "tool_call") {
+          const stepId = `step-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+          const thinkingText = thinkingBufRef.current.trim().slice(0, 80) || undefined;
+          thinkingBufRef.current = "";
+          updateAgentSteps((prev) => [
+            ...prev,
+            { id: stepId, name: event.name, args: event.args, status: "running", thinkingText } satisfies AgentStep,
+          ]);
+        } else if (event.type === "tool_result") {
+          updateAgentSteps((prev) => {
+            const idx = [...prev].reverse().findIndex((s) => s.name === event.name && s.status === "running");
+            if (idx === -1) return prev;
+            const realIdx = prev.length - 1 - idx;
+            return prev.map((s, i) => i === realIdx ? { ...s, status: "done" } : s);
+          });
+        } else if (event.type === "compressing") {
+          setIsCompressing(true);
+          const stepId = `compress-${Date.now()}`;
+          updateAgentSteps((prev) => [
+            ...prev,
+            { id: stepId, name: "__compressing__", args: { message: event.message }, status: "running" } satisfies AgentStep,
+          ]);
+        } else if (event.type === "compress_done") {
+          setIsCompressing(false);
+          if (event.freed_tokens > 0) setTotalInputTokens((prev) => Math.max(0, prev - event.freed_tokens));
+          updateAgentSteps((prev) => {
+            const idx = [...prev].reverse().findIndex((s) => s.name === "__compressing__" && s.status === "running");
+            if (idx === -1) return prev;
+            const realIdx = prev.length - 1 - idx;
+            return prev.map((s, i) =>
+              i === realIdx ? { ...s, status: "done", args: { ...s.args, freed_tokens: event.freed_tokens, message: event.message, compressed_messages: event.compressed_messages } } : s
+            );
+          });
+        }
+      },
+      // onThinkingDelta
+      (delta) => { thinkingBufRef.current += delta; },
+      true,                              // agentMode
+      clientContext,
+      conversationIdRef.current,
+      currentAgent?.systemPrompt || undefined,
+      [],                                // attachments
+      toolNames,
+      user?.id ?? null,
+      user?.id ?? null,
+      false,                             // compressOnly
+      maxLoopOverride,                   // ← 关键：覆盖最大循环次数
+    );
+  }, [currentModel, streaming, messages, sendMessage, clientContext, currentAgent, toolNames, user, updateAgentSteps]);
 
   // ── 手动压缩回调 ──
   const handleManualCompress = useCallback(async () => {
@@ -513,6 +616,62 @@ function ChatPageInner() {
 
   // 上下文占用百分比（0~100）
   const ctxUsagePercent = contextLimit > 0 ? Math.min(100, Math.round(totalInputTokens / contextLimit * 100)) : 0;
+
+  // ── LoopLimitBanner 组件（内联，避免新建文件）──
+  const LoopLimitBanner = loopLimitCount !== null ? (
+    <div
+      style={{
+        flexShrink: 0,
+        display: "flex",
+        alignItems: "center",
+        gap: "10px",
+        padding: "10px 20px",
+        backgroundColor: "rgba(245,158,11,0.07)",
+        borderTop: "1px solid rgba(245,158,11,0.2)",
+        borderBottom: "1px solid rgba(245,158,11,0.2)",
+      }}
+    >
+      <span style={{ fontSize: "13px", color: "#fbbf24", flex: 1 }}>
+        ⚡ Agent 已完成 <strong>{loopLimitCount}</strong> 次工具调用，是否继续执行？
+      </span>
+      <button
+        onClick={handleContinueLoop}
+        disabled={streaming}
+        style={{
+          flexShrink: 0,
+          padding: "5px 14px",
+          borderRadius: "6px",
+          border: "1px solid rgba(245,158,11,0.4)",
+          backgroundColor: "rgba(245,158,11,0.12)",
+          color: "#fbbf24",
+          fontSize: "12px",
+          fontWeight: 600,
+          cursor: streaming ? "not-allowed" : "pointer",
+          outline: "none",
+          whiteSpace: "nowrap",
+          opacity: streaming ? 0.5 : 1,
+        }}
+      >
+        继续执行（+10 次）
+      </button>
+      <button
+        onClick={() => setLoopLimitCount(null)}
+        style={{
+          flexShrink: 0,
+          padding: "5px 10px",
+          borderRadius: "6px",
+          border: "1px solid rgba(255,255,255,0.1)",
+          backgroundColor: "transparent",
+          color: "var(--text-muted)",
+          fontSize: "12px",
+          cursor: "pointer",
+          outline: "none",
+        }}
+      >
+        停止
+      </button>
+    </div>
+  ) : null;
 
   return (
     <div
@@ -624,6 +783,9 @@ function ChatPageInner() {
           />
         </div>
       )}
+
+      {/* 工具调用次数上限提示条 */}
+      {LoopLimitBanner}
 
       {/* 底部输入框 */}
       <ChatInput
