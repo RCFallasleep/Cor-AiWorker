@@ -128,9 +128,12 @@ class AnthropicProvider:
             calls.append(ToolCall(block.id, block.name, args, json.dumps(block.input)))
 
         raw_stop = final.stop_reason or ""
+        cache_read = final.usage.cache_read_input_tokens or 0
+        cache_write = final.usage.cache_creation_input_tokens or 0
         usage = Usage(
-            input_tokens=final.usage.input_tokens,
+            input_tokens=final.usage.input_tokens + cache_read + cache_write,
             output_tokens=final.usage.output_tokens,
-            cache_read_tokens=final.usage.cache_read_input_tokens or 0,
+            cache_read_tokens=cache_read,
+            cache_write_tokens=cache_write,
         )
         return TurnResult(text, calls, _STOP_MAP.get(raw_stop, "other"), usage, raw_stop)

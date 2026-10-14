@@ -40,14 +40,19 @@ class ToolResult:
 
 @dataclass
 class Usage:
+    # input_tokens 统一为「总输入」，包含缓存命中与缓存写入的部分。
+    # 注意两种协议口径不同：OpenAI 的 prompt_tokens 本身就是总数，
+    # Anthropic 的 input_tokens 只含未走缓存的部分，适配器需自行相加。
     input_tokens: int = 0
     output_tokens: int = 0
     cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
 
     def add(self, other: Usage) -> None:
         self.input_tokens += other.input_tokens
         self.output_tokens += other.output_tokens
         self.cache_read_tokens += other.cache_read_tokens
+        self.cache_write_tokens += other.cache_write_tokens
 
 
 @dataclass

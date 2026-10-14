@@ -95,7 +95,8 @@ def print_stats(stats: RunStats) -> None:
     u = stats.usage
     print(
         f"\n{DIM}[{stats.turns} 轮 · {stats.tool_calls} 次工具调用 · "
-        f"输入 {u.input_tokens}（缓存命中 {u.cache_read_tokens}）· 输出 {u.output_tokens} · "
+        f"输入 {u.input_tokens}（缓存命中 {u.cache_read_tokens}，写入 {u.cache_write_tokens}）· "
+        f"输出 {u.output_tokens} · "
         f"{stats.elapsed:.1f}s · 结束原因 {stats.stop}]{RESET}"
     )
 
