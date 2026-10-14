@@ -17,6 +17,7 @@
 
 ```
 Cor-AiWorker/
+├── server/     # v2 Python 后端（Harness 内核与本地 API）
 ├── docs/       # v2 文档
 └── legacy/     # v1（学年设计原型版）归档，仅作参考
 ```

@@ -70,3 +70,8 @@ plugins/debuggerPlugin/local.properties
 
 # ── 本地 Demo 项目（参考实现，不入库）──
 demos/
+
+# ── 测试 / 类型检查缓存 ──
+.pytest_cache/
+.coverage
+htmlcov/
