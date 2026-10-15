@@ -77,3 +77,28 @@ async def test_concurrent_transactions_do_not_interleave(db: Database) -> None:
     assert sum(isinstance(r, RuntimeError) for r in results) == 1
     names = {r["tool_name"] for r in await db.fetchall("SELECT tool_name FROM tool_policies")}
     assert names == {f"g{i}" for i in range(10)}
+
+
+async def test_cancel_at_any_point_leaves_no_open_transaction(db: Database) -> None:
+    """在事务的不同阶段取消任务，之后的事务都必须能正常进行（回归测试）。"""
+
+    async def writer(name: str) -> None:
+        async with db.transaction() as conn:
+            await conn.execute("INSERT INTO tool_policies VALUES (?, 'allow', 'now')", (name,))
+            await asyncio.sleep(10)
+
+    # 让任务推进不同的步数后取消：分别停在 BEGIN、INSERT、事务体内的等待
+    for steps in range(4):
+        task = asyncio.create_task(writer(f"cancelled{steps}"))
+        for _ in range(steps):
+            await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.wait({task})
+
+        async with db.transaction() as conn:
+            await conn.execute(
+                "INSERT INTO tool_policies VALUES (?, 'allow', 'now')", (f"ok{steps}",)
+            )
+
+    names = {r["tool_name"] for r in await db.fetchall("SELECT tool_name FROM tool_policies")}
+    assert names == {f"ok{i}" for i in range(4)}

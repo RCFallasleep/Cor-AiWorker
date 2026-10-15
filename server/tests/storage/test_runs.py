@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import sqlite3
+
+import pytest
+
 from cor_aiworker.storage.db import Database
 from cor_aiworker.storage.runs import RunStore, RunTotals
 from cor_aiworker.storage.sessions import SessionStore
@@ -48,10 +52,16 @@ async def test_recover_interrupted_runs(db: Database) -> None:
 
 async def test_events_are_sequenced_and_resumable(db: Database) -> None:
     runs, _, run_id = await new_run(db)
-    first = await runs.append_events(run_id, [{"type": "run_started"}, {"type": "text_delta"}])
-    second = await runs.append_events(run_id, [{"type": "run_finished", "turns": 1}])
-    assert (first, second) == ([1, 2], [3])
+    await runs.append_events(run_id, [(1, {"type": "run_started"}), (2, {"type": "text_delta"})])
+    await runs.append_events(run_id, [(3, {"type": "run_finished", "turns": 1})])
 
     resumed = await runs.events(run_id, after_seq=2)
     assert [(e.seq, e.type) for e in resumed] == [(3, "run_finished")]
     assert resumed[0].payload == {"type": "run_finished", "turns": 1}
+
+
+async def test_duplicate_event_seq_is_rejected(db: Database) -> None:
+    runs, _, run_id = await new_run(db)
+    await runs.append_events(run_id, [(1, {"type": "run_started"})])
+    with pytest.raises(sqlite3.IntegrityError):
+        await runs.append_events(run_id, [(1, {"type": "text_delta"})])

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import importlib.resources
 import json
 import re
@@ -87,14 +88,18 @@ class Database:
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[aiosqlite.Connection]:
         async with self._lock:
-            await self._conn.execute("BEGIN IMMEDIATE")
+            # BEGIN、事务体、COMMIT 都要在保护范围内：任务可能在任意一个 await 处被取消。
+            # aiosqlite 在 await 之前就已把语句交给数据库线程，所以即使 await 被取消，
+            # 语句仍会执行；随后补发的 ROLLBACK 排在它后面，能保证不留下悬空事务。
             try:
+                await self._conn.execute("BEGIN IMMEDIATE")
                 yield self._conn
-            except BaseException:
-                await self._conn.execute("ROLLBACK")
-                raise
-            else:
                 await self._conn.execute("COMMIT")
+            except BaseException:
+                # BEGIN 本身失败或 COMMIT 已完成时没有可回滚的事务，忽略该错误
+                with contextlib.suppress(sqlite3.Error):
+                    await self._conn.execute("ROLLBACK")
+                raise
 
     async def fetchall(self, sql: str, params: Iterable[Any] = ()) -> list[sqlite3.Row]:
         async with self._lock:

@@ -51,7 +51,7 @@ async def test_rename_and_delete_cascades(db: Database) -> None:
     session = await sessions.create(provider="p", model="m")
     run = await runs.start(session.id, "问题")
     await sessions.append_messages(session.id, [{"role": "user"}], run_id=run.id)
-    await runs.append_events(run.id, [{"type": "run_started"}])
+    await runs.append_events(run.id, [(1, {"type": "run_started"})])
 
     assert await sessions.rename(session.id, "新标题")
     renamed = await sessions.get(session.id)

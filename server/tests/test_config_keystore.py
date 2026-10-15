@@ -3,10 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from keyring.errors import PasswordDeleteError
 
 from cor_aiworker.config import DATA_DIR_ENV, Settings
 from cor_aiworker.keystore import Keystore, mcp_secret_name
+from tests.helpers import MemoryKeyBackend
 
 
 def test_data_dir_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -22,24 +22,8 @@ def test_default_data_dir(monkeypatch: pytest.MonkeyPatch) -> None:
     assert Settings.load().data_dir.name == "cor-aiworker"
 
 
-class MemoryBackend:
-    def __init__(self) -> None:
-        self.items: dict[tuple[str, str], str] = {}
-
-    def get_password(self, service: str, username: str) -> str | None:
-        return self.items.get((service, username))
-
-    def set_password(self, service: str, username: str, password: str) -> None:
-        self.items[(service, username)] = password
-
-    def delete_password(self, service: str, username: str) -> None:
-        if (service, username) not in self.items:
-            raise PasswordDeleteError("not found")
-        del self.items[(service, username)]
-
-
 def test_keystore_round_trip() -> None:
-    store = Keystore(MemoryBackend())
+    store = Keystore(MemoryKeyBackend())
     assert not store.has("deepseek")
     store.set("deepseek", "  sk-test \n")
     assert store.get("deepseek") == "sk-test"  # 粘贴时带入的空白会被去掉
@@ -50,7 +34,7 @@ def test_keystore_round_trip() -> None:
 
 def test_keystore_rejects_empty_secret() -> None:
     with pytest.raises(ValueError, match="不能为空"):
-        Keystore(MemoryBackend()).set("x", "   ")
+        Keystore(MemoryKeyBackend()).set("x", "   ")
 
 
 def test_mcp_secret_name() -> None:

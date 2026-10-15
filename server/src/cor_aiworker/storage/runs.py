@@ -145,27 +145,21 @@ class RunStore:
         )
         return [_run(r) for r in rows]
 
-    async def append_events(self, run_id: str, events: list[dict[str, Any]]) -> list[int]:
-        """按顺序追加事件，返回分配的序号。每个事件 dict 必须包含 "type"。"""
+    async def append_events(self, run_id: str, events: list[tuple[int, dict[str, Any]]]) -> None:
+        """追加事件。序号由调用方分配（实时推送与持久化必须用同一个序号），
+        重复的序号会因主键冲突而失败。每个事件 dict 必须包含 "type"。"""
         if not events:
-            return []
+            return
         timestamp = now()
         async with self._db.transaction() as conn:
-            cursor = await conn.execute(
-                "SELECT COALESCE(MAX(seq), 0) FROM run_events WHERE run_id = ?", (run_id,)
-            )
-            row = await cursor.fetchone()
-            start = int(row[0]) + 1 if row else 1
-            seqs = list(range(start, start + len(events)))
             await conn.executemany(
                 "INSERT INTO run_events (run_id, seq, type, payload, created_at)"
                 " VALUES (?, ?, ?, ?, ?)",
                 [
                     (run_id, seq, event["type"], dump_json(event), timestamp)
-                    for seq, event in zip(seqs, events, strict=True)
+                    for seq, event in events
                 ],
             )
-        return seqs
 
     async def events(self, run_id: str, *, after_seq: int = 0) -> list[EventRecord]:
         """读取运行日志；after_seq 用于断线重连后只补发错过的事件（ADR-004）。"""
