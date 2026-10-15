@@ -7,15 +7,21 @@ requires-python = ">=3.12"
 dependencies = [
     "aiosqlite>=0.22.1",
     "anthropic>=1.13.0",
+    "fastapi>=0.143.1",
     "jsonschema>=4.26.0",
     "keyring>=25.7.0",
     "mcp>=2.3.0",
     "openai>=3.31.0",
     "platformdirs>=4.13.0",
+    "uvicorn>=0.54.0",
 ]
+
+[project.scripts]
+cor-aiworker = "cor_aiworker.cli:main"
 
 [dependency-groups]
 dev = [
+    "httpx>=0.28.1",
     "mypy>=1.15",
     "pytest>=8.3",
     "pytest-asyncio>=1.4.0",
@@ -40,7 +46,7 @@ target-version = "py312"
 select = ["E", "F", "I", "B", "UP", "SIM", "ASYNC", "S"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101"]  # 测试中允许 assert
+"tests/**" = ["S101", "S105", "S106"]  # 测试中允许 assert 与假凭据
 
 [tool.mypy]
 strict = true

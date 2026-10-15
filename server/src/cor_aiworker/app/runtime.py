@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from typing import cast, get_args
 
 from ..config import Settings
+from ..instance import InstanceLock
 from ..kernel.loop import LoopConfig
 from ..kernel.tools.builtin import register_builtin_tools
 from ..kernel.tools.mcp import McpConnections, McpServerConfig
@@ -53,43 +54,62 @@ class Runtime:
     ) -> AsyncIterator[Runtime]:
         keystore = keystore or Keystore()
         settings.ensure_dirs()
-        db = await Database.open(settings.db_path)
+        lock = InstanceLock(settings.lock_path)
+        lock.acquire()
         try:
-            run_store = RunStore(db)
-            recovered = await run_store.recover_interrupted()
-            session_store = SessionStore(db)
-            settings_store = SettingsStore(db)
-
-            tools = ToolRegistry()
-            register_builtin_tools(tools)
-            async with McpConnections(tools) as mcp:
-                errors = await _connect_mcp_servers(mcp, settings_store, keystore)
-                manager = RunManager(
-                    sessions=session_store,
-                    runs=run_store,
-                    settings=settings_store,
-                    tools=tools,
-                    provider_factory=provider_factory or keystore_provider_factory(keystore),
-                    loop_config=loop_config,
-                )
-                try:
-                    yield cls(
-                        settings=settings,
-                        db=db,
-                        keystore=keystore,
-                        tools=tools,
-                        sessions=SessionService(session_store, manager),
-                        runs=manager,
-                        run_store=run_store,
-                        settings_store=settings_store,
-                        recovered_runs=recovered,
-                        mcp_errors=errors,
-                    )
-                finally:
-                    # 先停运行（它们可能正在调用 MCP 工具），再关 MCP，最后关数据库
-                    await manager.shutdown()
+            async with _open_runtime(
+                cls, settings, keystore, provider_factory, loop_config
+            ) as runtime:
+                yield runtime
         finally:
-            await db.close()
+            lock.release()
+
+
+@asynccontextmanager
+async def _open_runtime(
+    cls: type[Runtime],
+    settings: Settings,
+    keystore: Keystore,
+    provider_factory: ProviderFactory | None,
+    loop_config: LoopConfig | None,
+) -> AsyncIterator[Runtime]:
+    db = await Database.open(settings.db_path)
+    try:
+        run_store = RunStore(db)
+        recovered = await run_store.recover_interrupted()
+        session_store = SessionStore(db)
+        settings_store = SettingsStore(db)
+
+        tools = ToolRegistry()
+        register_builtin_tools(tools)
+        async with McpConnections(tools, log_dir=settings.log_dir) as mcp:
+            errors = await _connect_mcp_servers(mcp, settings_store, keystore)
+            manager = RunManager(
+                sessions=session_store,
+                runs=run_store,
+                settings=settings_store,
+                tools=tools,
+                provider_factory=provider_factory or keystore_provider_factory(keystore),
+                loop_config=loop_config,
+            )
+            try:
+                yield cls(
+                    settings=settings,
+                    db=db,
+                    keystore=keystore,
+                    tools=tools,
+                    sessions=SessionService(session_store, manager),
+                    runs=manager,
+                    run_store=run_store,
+                    settings_store=settings_store,
+                    recovered_runs=recovered,
+                    mcp_errors=errors,
+                )
+            finally:
+                # 先停运行（它们可能正在调用 MCP 工具），再关 MCP，最后关数据库
+                await manager.shutdown()
+    finally:
+        await db.close()
 
 
 async def _connect_mcp_servers(

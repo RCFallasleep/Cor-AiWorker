@@ -5,9 +5,10 @@ from __future__ import annotations
 import re
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
-from mcp import Client, StdioServerParameters
+from mcp import Client, StdioServerParameters, stdio_client
 
 from ..types import JSON, Risk, ToolSpec
 from .registry import ToolHandler, ToolOutput, ToolRegistry
@@ -70,10 +71,15 @@ def _render_content(block: Any) -> str:
 
 
 class McpConnections:
-    """管理 MCP 子进程的生命周期。用法：async with McpConnections(registry) as mcp: ..."""
+    """管理 MCP 子进程的生命周期。用法：async with McpConnections(registry) as mcp: ...
 
-    def __init__(self, registry: ToolRegistry) -> None:
+    log_dir 不为空时，每个子进程的 stderr 写入 {log_dir}/mcp-{服务名}.log，
+    不再混进本地服务自己的输出。
+    """
+
+    def __init__(self, registry: ToolRegistry, *, log_dir: Path | None = None) -> None:
         self._registry = registry
+        self._log_dir = log_dir
         self._stack = AsyncExitStack()
 
     async def __aenter__(self) -> McpConnections:
@@ -87,7 +93,14 @@ class McpConnections:
         params = StdioServerParameters(
             command=config.command, args=list(config.args), env=config.env
         )
-        client = await self._stack.enter_async_context(Client(params))
+        if self._log_dir is None:
+            client = Client(params)
+        else:
+            safe_name = _INVALID_NAME_CHARS.sub("_", config.name)
+            log_path = self._log_dir / f"mcp-{safe_name}.log"
+            errlog = self._stack.enter_context(log_path.open("a", encoding="utf-8"))
+            client = Client(stdio_client(params, errlog=errlog))
+        await self._stack.enter_async_context(client)
         return await register_client(
             self._registry, config.name, client, risk=config.risk, untrusted=config.untrusted
         )
