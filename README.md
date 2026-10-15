@@ -25,6 +25,15 @@ Cor-AiWorker/
 
 v1 的说明与运行方式见 [legacy/README.md](legacy/README.md)。
 
+## 关于开发
+
+本项目在 AI 辅助下开发，需求、架构决策与验收由作者完成：
+
+| 阶段 | 时间 | 使用的模型 |
+|---|---|---|
+| v1（学年设计原型） | 2026-06 | Claude Opus 4.7 |
+| v2（重构） | 2026-10 起 | Claude Opus 5.5（通过 Claude Code） |
+
 ## License
 
 待定
