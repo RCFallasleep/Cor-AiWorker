@@ -12,6 +12,7 @@
 ## 文档
 
 - [产品需求文档 v2](docs/PRD-v2.md)
+- [架构文档](docs/ARCHITECTURE.md)
 
 ## 目录
 
