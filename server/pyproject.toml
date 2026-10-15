@@ -4,7 +4,13 @@ version = "0.0.1"
 description = "本地优先的个人 Agent Harness，支持跨实例上下文协作"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "anthropic>=1.13.0",
+    "jsonschema>=4.26.0",
+    "keyring>=25.7.0",
+    "mcp>=2.3.0",
+    "openai>=3.31.0",
+]
 
 [dependency-groups]
 dev = [
@@ -13,13 +19,6 @@ dev = [
     "pytest-asyncio>=1.4.0",
     "ruff>=0.11",
     "types-jsonschema>=4.26.0.20261006",
-]
-spike = [
-    "anthropic>=1.13.0",
-    "jsonschema>=4.26.0",
-    "keyring>=25.7.0",
-    "mcp>=2.3.0",
-    "openai>=3.31.0",
 ]
 
 [build-system]
@@ -40,10 +39,6 @@ select = ["E", "F", "I", "B", "UP", "SIM", "ASYNC", "S"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101"]  # 测试中允许 assert
-
-[tool.uv]
-# 本地 uv sync 与 CI 均安装技术验证依赖，保证 spikes 的测试和类型检查能运行
-default-groups = ["dev", "spike"]
 
 [tool.mypy]
 strict = true
