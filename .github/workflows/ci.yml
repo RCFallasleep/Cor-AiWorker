@@ -37,3 +37,36 @@ jobs:
 
       - name: 测试（pytest）
         run: uv run pytest
+
+  web:
+    name: web（前端）
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 类型检查
+        run: npm run typecheck
+
+      - name: 代码检查（oxlint）
+        run: npm run lint
+
+      - name: 颜色检查（组件中不得写死颜色）
+        run: npm run check:colors
+
+      - name: 测试（vitest）
+        run: npm test
+
+      - name: 构建
+        run: npx vite build

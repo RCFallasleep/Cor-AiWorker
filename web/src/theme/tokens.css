@@ -1,0 +1,159 @@
+/*
+ * 主题变量（docs/ARCHITECTURE.md 4.10）
+ *
+ * 外观 = 明暗模式（<html data-theme>）× 皮肤（<html data-skin>）。
+ * 组件只引用这里的变量，不写颜色值（scripts/check-colors.mjs 在 CI 中检查）。
+ * 皮肤只提供强调色的浅色、深色两套取值，明暗模式决定使用哪一套；需要时皮肤也可以覆盖任何变量。
+ * 字体使用系统字体：本地优先的应用不应在打开时向外部服务器请求资源。
+ */
+
+:root {
+  /* 默认皮肤「品牌蓝」，取自 logo */
+  --accent-l: #2563eb;
+  --accent-weak-l: #e8effd;
+  --accent-fg-l: #ffffff;
+  --accent-d: #6ea1fa;
+  --accent-weak-d: #142340;
+  --accent-fg-d: #0b1630;
+
+  --bg: #f4f6f8;
+  --panel: #ffffff;
+  --side: #e9edf1;
+  --fg: #17202b;
+  --muted: #5a6676;
+  --line: #d8dee5;
+  --accent: var(--accent-l);
+  --accent-weak: var(--accent-weak-l);
+  --accent-fg: var(--accent-fg-l);
+  --warn: #8a5200;
+  --warn-bg: #fff3dc;
+  --warn-line: #edc57a;
+  --danger: #b42318;
+  --danger-bg: #fdecea;
+  --danger-line: #f0b4ac;
+  --ok: #1e7b4f;
+  --ok-bg: #e5f4ec;
+  --code-bg: #eef2f5;
+  --shadow: 0 8px 28px rgb(23 32 43 / 14%);
+
+  --font-ui: "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  --radius: 8px;
+
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f141a;
+    --panel: #151b23;
+    --side: #0b1015;
+    --fg: #e4e9ef;
+    --muted: #94a0af;
+    --line: #25303c;
+    --accent: var(--accent-d);
+    --accent-weak: var(--accent-weak-d);
+    --accent-fg: var(--accent-fg-d);
+    --warn: #f2b04c;
+    --warn-bg: #2a2010;
+    --warn-line: #6b4c16;
+    --danger: #f27b6e;
+    --danger-bg: #2c1513;
+    --danger-line: #6e2a23;
+    --ok: #5cc98f;
+    --ok-bg: #10281c;
+    --code-bg: #1b232d;
+    --shadow: 0 8px 28px rgb(0 0 0 / 45%);
+
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg: #0f141a;
+  --panel: #151b23;
+  --side: #0b1015;
+  --fg: #e4e9ef;
+  --muted: #94a0af;
+  --line: #25303c;
+  --accent: var(--accent-d);
+  --accent-weak: var(--accent-weak-d);
+  --accent-fg: var(--accent-fg-d);
+  --warn: #f2b04c;
+  --warn-bg: #2a2010;
+  --warn-line: #6b4c16;
+  --danger: #f27b6e;
+  --danger-bg: #2c1513;
+  --danger-line: #6e2a23;
+  --ok: #5cc98f;
+  --ok-bg: #10281c;
+  --code-bg: #1b232d;
+  --shadow: 0 8px 28px rgb(0 0 0 / 45%);
+
+  color-scheme: dark;
+}
+
+/* ── 皮肤：只覆盖强调色的两套取值 ── */
+
+:root[data-skin="teal"] {
+  --accent-l: #0f766e;
+  --accent-weak-l: #e1f2ef;
+  --accent-fg-l: #ffffff;
+  --accent-d: #3fb8a7;
+  --accent-weak-d: #123430;
+  --accent-fg-d: #06201c;
+}
+
+:root[data-skin="ink"] {
+  --accent-l: #334155;
+  --accent-weak-l: #e6eaf0;
+  --accent-fg-l: #ffffff;
+  --accent-d: #cbd5e1;
+  --accent-weak-d: #1f2733;
+  --accent-fg-d: #0f141a;
+}
+
+/* ── 基础样式 ── */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-ui);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}

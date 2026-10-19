@@ -18,7 +18,8 @@
 
 ```
 Cor-AiWorker/
-├── server/     # v2 Python 后端（Harness 内核与本地 API）
+├── server/     # 本地服务：Harness 内核、存储与 HTTP API（Python）
+├── web/        # 网页界面（Vite + React + TypeScript）
 ├── docs/       # v2 文档
 └── legacy/     # v1（学年设计原型版）归档，仅作参考
 ```

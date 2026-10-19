@@ -1,0 +1,144 @@
+/* 布局：左侧会话栏 + 右侧工作区；窄屏时上下排列 */
+.app {
+  display: grid;
+  grid-template-columns: 264px minmax(0, 1fr);
+  height: 100%;
+}
+
+.side {
+  background: var(--side);
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.brand {
+  padding: 18px 16px 12px;
+  display: grid;
+  gap: 2px;
+}
+
+.brand b {
+  font-family: var(--font-mono);
+  font-size: 15px;
+  letter-spacing: 0.02em;
+}
+
+.brandRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.logo {
+  color: var(--accent);
+  flex: none;
+}
+
+.status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--muted);
+  flex: none;
+}
+
+.status[data-state="online"] .dot {
+  background: var(--ok);
+}
+
+.status[data-state="error"] .dot {
+  background: var(--danger);
+}
+
+.sessions {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 8px 12px;
+  display: grid;
+  align-content: start;
+  gap: 2px;
+}
+
+.session {
+  display: grid;
+  gap: 1px;
+  padding: 8px 10px;
+  border-radius: 7px;
+}
+
+.sessionTitle {
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sessionMeta {
+  font-size: 11.5px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+}
+
+.hint {
+  color: var(--muted);
+  font-size: 13px;
+  padding: 0 10px;
+}
+
+.main {
+  min-width: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px 16px;
+}
+
+.empty {
+  text-align: center;
+  display: grid;
+  gap: 6px;
+  justify-items: center;
+  max-width: 65ch;
+}
+
+.empty h1 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.empty p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.emptyLogo {
+  color: var(--accent);
+  opacity: 0.55;
+  margin-bottom: 6px;
+}
+
+.empty .error {
+  color: var(--danger);
+}
+
+@media (max-width: 760px) {
+  .app {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto 1fr;
+  }
+
+  .side {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    max-height: 40vh;
+  }
+}

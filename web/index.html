@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- 访问令牌：生产环境由本地服务注入，开发环境由 Vite 插件注入（见 vite.config.ts） -->
+    <meta name="cor-aiworker-token" content="" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>Cor-AiWorker</title>
+    <script>
+      // 在页面渲染前应用外观偏好，避免先闪一下默认样式。与 src/theme/look.ts 保持一致。
+      (function () {
+        try {
+          var look = JSON.parse(localStorage.getItem("cor-aiworker.look") || "{}");
+          var root = document.documentElement;
+          if (look.mode === "light" || look.mode === "dark") root.setAttribute("data-theme", look.mode);
+          if (look.skin === "teal" || look.skin === "ink") root.setAttribute("data-skin", look.skin);
+        } catch (e) {}
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
